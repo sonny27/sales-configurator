@@ -1,0 +1,6 @@
+.alpackages/
+.coverage/
+.snapshots/
+.vscode/
+*.app
+Thumbs.db
