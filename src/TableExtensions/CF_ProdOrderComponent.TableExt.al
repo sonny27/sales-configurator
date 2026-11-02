@@ -24,6 +24,18 @@ tableextension 91001 CF_ProdOrderComponent extends "Prod. Order Component"
             DataClassification = CustomerContent;
             Editable = false;
         }
+        field(91004; CF_ProductionBOMChoice; Boolean)
+        {
+            Caption = 'Exploded Configuration BOM Component';
+            DataClassification = CustomerContent;
+            Editable = false;
+        }
+        field(91005; CF_BOMNodeId; Guid)
+        {
+            Caption = 'Configuration BOM Node ID';
+            DataClassification = SystemMetadata;
+            Editable = false;
+        }
     }
     keys
     {

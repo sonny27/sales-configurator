@@ -50,7 +50,9 @@ page 91007 CF_ProductConfigurations
                 field(SalesUOM; SalesLine."Unit of Measure Code") { ApplicationArea = All; Caption = 'Sales Unit of Measure'; ToolTip = 'Specifies the unit of measure on the source sales line.'; }
                 field(LocationCode; SalesLine."Location Code") { ApplicationArea = All; Caption = 'Location Code'; ToolTip = 'Specifies the location on the current source sales line.'; }
                 field(ShipmentDate; SalesLine."Shipment Date") { ApplicationArea = All; Caption = 'Shipment Date'; ToolTip = 'Specifies the current source sales line shipment date.'; }
-                field(ItemCategoryCode; Rec."Item Category Code") { ApplicationArea = All; ToolTip = 'Specifies the template item category.'; }
+                field(ItemCategoryCode; Rec."Item Category Code") { ApplicationArea = All; ToolTip = 'Specifies the source parent item category.'; }
+                field(TemplateCode; Rec."Template Code") { ApplicationArea = All; ToolTip = 'Specifies the original template retained by this saved configuration.'; }
+                field(TemplateAssignment; Rec."Template Assignment") { ApplicationArea = All; ToolTip = 'Specifies whether the original template was assigned by item or category.'; }
                 field(SavedOptions; Rec."Saved Options")
                 {
                     ApplicationArea = All;

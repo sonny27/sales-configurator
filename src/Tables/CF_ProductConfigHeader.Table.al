@@ -30,6 +30,8 @@ table 91003 CF_ProductConfigHeader
             CalcFormula = count(CF_DocumentLineProductConfig where("Document Type" = field("Document Type"),
                 "Source Table ID" = field("Source Table ID"), "Source Line SystemId" = field("Source Line SystemId")));
         }
+        field(12; "Template Code"; Code[20]) { Caption = 'Template Code'; Editable = false; TableRelation = CF_ConfigTemplate; }
+        field(13; "Template Assignment"; Enum CF_TemplateAssignment) { Caption = 'Template Assignment'; Editable = false; }
     }
     keys
     {
@@ -54,6 +56,8 @@ table 91003 CF_ProductConfigHeader
 
     trigger OnModify()
     begin
+        if ("Template Code" <> xRec."Template Code") or ("Template Assignment" <> xRec."Template Assignment") then
+            Error('A saved configuration must retain its original template assignment. Delete and recreate the configuration to use another template.');
         if "No." <> xRec."No." then
             Error(IdentityChangeErr);
         if ("No. Series" <> xRec."No. Series") and not IsNumberUpgrade() then
@@ -69,6 +73,7 @@ table 91003 CF_ProductConfigHeader
         Config: Record CF_DocumentLineProductConfig;
         SalesLine: Record "Sales Line";
         Mgt: Codeunit CF_DocumentConfigMgt;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
     begin
         GetConfigIdentity(Config);
         Config.SetRange("Document Type", "Document Type");
@@ -76,6 +81,8 @@ table 91003 CF_ProductConfigHeader
         Config.SetRange("Source Line SystemId", "Source Line SystemId");
         if not Config.IsEmpty() then
             Error(DeleteChoicesFirstErr);
+        if DraftMgt.HasSaved("Source Line SystemId") then
+            Error('Delete the saved BOM structure through Delete Configuration before deleting its configuration header.');
         if ("Document Type" in [CF_ConfigDocumentType::SalesOrder, CF_ConfigDocumentType::SalesQuote]) and ("Source Table ID" = Database::"Sales Line") then
             if SalesLine.GetBySystemId("Source Line SystemId") then
                 Mgt.EnsureEditable(SalesLine);
@@ -138,6 +145,9 @@ table 91003 CF_ProductConfigHeader
         Config."Item Category Code" := "Item Category Code";
         Config."Parent Item No." := "Parent Item No.";
         Config."Parent Variant Code" := "Parent Variant Code";
+        Config."Template Code" := "Template Code";
+        Config."Template Assignment" := "Template Assignment";
+        Config."Template Context Set" := true;
     end;
 
     var

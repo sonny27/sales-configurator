@@ -1,6 +1,8 @@
 namespace CloudFactory.SalesConfigurator;
 
 using Microsoft.Sales.Document;
+using Microsoft.Inventory.Item;
+using Microsoft.Manufacturing.ProductionBOM;
 
 page 91010 CF_ConfiguredBOM
 {
@@ -30,19 +32,50 @@ page 91010 CF_ConfiguredBOM
                 field(ShipmentDate; SalesLine."Shipment Date") { ApplicationArea = All; Caption = 'Shipment Date'; ToolTip = 'Specifies the date used to select the certified BOM version and effective BOM lines.'; }
                 field(ProductionBOMNo; ProductionBOMNo) { ApplicationArea = All; Caption = 'Production BOM No.'; ToolTip = 'Specifies the effective production BOM from the parent item or stockkeeping unit.'; }
                 field(VersionCode; VersionCode) { ApplicationArea = All; Caption = 'Version Code'; ToolTip = 'Specifies the certified BOM version for the shipment date. Blank means the certified base BOM.'; }
-                field(ParentUOMCode; ParentUOMCode) { ApplicationArea = All; Caption = 'Parent BOM Unit of Measure'; ToolTip = 'Specifies the parent unit for Quantity per. Configured quantities are converted from the finished item base unit to this BOM unit.'; }
+                field(ParentUOMCode; ParentUOMCode) { ApplicationArea = All; Caption = 'Parent BOM Unit of Measure'; ToolTip = 'Specifies the root BOM unit used for top-level quantities. Child rows use their immediate parent BOM unit shown on the line.'; }
                 field(PreviewMessage; PreviewMessage) { ApplicationArea = All; ShowCaption = false; ToolTip = 'Explains the preview scope. It never writes a master BOM or creates a production order.'; }
             }
             repeater(Lines)
             {
+                IndentationColumn = Rec.Indentation;
+                IndentationControls = No;
+                ShowAsTree = true;
+                TreeInitialState = ExpandAll;
                 field(Configured; Rec.Configured) { ApplicationArea = All; ToolTip = 'Specifies whether this line is an added configuration component rather than an existing master BOM line.'; }
-                field(Type; Rec.Type) { ApplicationArea = All; ToolTip = 'Specifies the standard BOM line type. Nested production BOMs remain top-level references, as on the Base Application BOM card.'; }
-                field(No; Rec."No.") { ApplicationArea = All; ToolTip = 'Specifies the item or nested production BOM number.'; }
+                field(Type; Rec.Type) { ApplicationArea = All; ToolTip = 'Specifies the standard BOM line type. Expand Production BOM rows to view their nested components.'; }
+                field(No; Rec."No.")
+                {
+                    ApplicationArea = All;
+                    DrillDown = true;
+                    ToolTip = 'Specifies the item or nested production BOM number. Select the number to open its Item Card or Production BOM card.';
+                    trigger OnDrillDown()
+                    var
+                        Item: Record Item;
+                        BOMHeader: Record "Production BOM Header";
+                    begin
+                        if Rec."No." = '' then
+                            exit;
+                        case Rec.Type of
+                            Rec.Type::Item:
+                                begin
+                                    Item.Get(Rec."No.");
+                                    Page.RunModal(Page::"Item Card", Item);
+                                end;
+                            Rec.Type::"Production BOM":
+                                begin
+                                    BOMHeader.Get(Rec."No.");
+                                    Page.RunModal(Page::"Production BOM", BOMHeader);
+                                end;
+                        end;
+                    end;
+                }
                 field(Description; Rec.Description) { ApplicationArea = All; ToolTip = 'Specifies the BOM line or configured component description.'; }
                 field(VariantCode; Rec."Variant Code") { ApplicationArea = All; ToolTip = 'Specifies the component variant.'; }
-                field(QuantityPer; Rec."Quantity per") { ApplicationArea = All; ToolTip = 'Specifies the quantity in the component unit per parent BOM unit. Base BOM calculation formulas and fixed quantities retain their standard meaning.'; }
+                field(QuantityPer; Rec."Quantity per") { ApplicationArea = All; Caption = 'Quantity per Parent'; ToolTip = 'Specifies quantity in the component UOM per immediate parent BOM unit, not cumulative demand. Master BOM formulas and fixed quantities retain their standard meaning.'; }
                 field(UOMCode; Rec."Unit of Measure Code") { ApplicationArea = All; ToolTip = 'Specifies the component unit of measure.'; }
-                field(ScrapPercent; Rec."Scrap %") { ApplicationArea = All; ToolTip = 'Specifies the standard BOM scrap percentage. Configured additions have no extra scrap percentage.'; }
+                field(LineParentUOM; Rec."Parent BOM Unit of Measure") { ApplicationArea = All; ToolTip = 'Specifies the immediate parent BOM unit for this row''s Quantity per Parent. It can differ from the root BOM unit.'; }
+                field(Level; Rec.Indentation) { ApplicationArea = All; Visible = false; ToolTip = 'Specifies the nesting level, starting at zero for root BOM lines and configured additions.'; }
+                field(ScrapPercent; Rec."Scrap %") { ApplicationArea = All; ToolTip = 'Specifies scrap from the source BOM line. Direct configured additions have no extra scrap; their nested BOM components retain native scrap values.'; }
                 field(RoutingLinkCode; Rec."Routing Link Code") { ApplicationArea = All; ToolTip = 'Specifies the base BOM or selected configuration routing link.'; }
                 field(ConfigurationOption; Rec."Configuration Option") { ApplicationArea = All; ToolTip = 'Specifies the option that added this configured component.'; }
                 field(ChoiceCode; Rec."Choice Code") { ApplicationArea = All; ToolTip = 'Specifies the selected choice that added this configured component.'; }
@@ -78,6 +111,6 @@ page 91010 CF_ConfiguredBOM
         VersionCode: Code[20];
         ParentUOMCode: Code[10];
         PreviewMessage: Text[500];
-        UnsavedPreviewLbl: Label 'Read-only top-level BOM preview using current window choices, including unsaved edits. Apply Configuration is still required. This is not the linked production order snapshot or an exploded production component calculation.';
-        SavedPreviewLbl: Label 'Read-only top-level BOM preview using saved choices only. This is not the linked production order snapshot or an exploded production component calculation.';
+        UnsavedPreviewLbl: Label 'Read-only multilevel BOM preview using current window choices, including unsaved edits. Expand Production BOM rows to view components. Apply Configuration is still required. Quantities are per immediate parent, not scheduled production demand.';
+        SavedPreviewLbl: Label 'Read-only multilevel BOM preview using saved choices only. Expand Production BOM rows to view components. Quantities are per immediate parent, not scheduled production demand or the linked production snapshot.';
 }

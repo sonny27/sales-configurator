@@ -38,6 +38,8 @@ table 91005 CF_ConfiguredBOMLine
         field(100; Configured; Boolean) { Caption = 'Configured Addition'; }
         field(101; "Configuration Option"; Code[10]) { Caption = 'Configuration Option'; }
         field(102; "Choice Code"; Code[20]) { Caption = 'Choice Code'; }
+        field(103; Indentation; Integer) { Caption = 'Level'; }
+        field(104; "Parent BOM Unit of Measure"; Code[10]) { Caption = 'Parent BOM Unit of Measure'; }
     }
     keys
     {

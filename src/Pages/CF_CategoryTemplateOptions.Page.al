@@ -4,7 +4,7 @@ using Microsoft.Inventory.Item;
 
 page 91004 CF_CategoryTemplateOptions
 {
-    Caption = 'Category Template Options';
+    Caption = 'Template Options';
     PageType = ListPart;
     SourceTable = CF_ConfiguratorBOM;
     SourceTableView = sorting("Item Category Code", "Display Order", "Configuration Option");
@@ -18,9 +18,9 @@ page 91004 CF_CategoryTemplateOptions
         {
             repeater(Options)
             {
-                field(ConfigurationOption; Rec."Configuration Option") { ApplicationArea = All; ToolTip = 'Specifies the stable option code within the selected category.'; }
+                field(ConfigurationOption; Rec."Configuration Option") { ApplicationArea = All; ToolTip = 'Specifies the stable option code within the selected template.'; }
                 field(OptionDescription; Rec."Option Description") { ApplicationArea = All; ToolTip = 'Specifies the option description displayed to sales users.'; }
-                field(QuantityPerUnit; Rec."Quantity per Unit") { ApplicationArea = All; ToolTip = 'Specifies the default component quantity per finished item base unit.'; }
+                field(MandatoryValues; Rec."Mandatory Values") { ApplicationArea = All; ToolTip = 'Specifies the mandatory rule shared by every choice under this option: None, Choice Code, or Choice Code and Quantity.'; }
                 field(Enabled; Rec.Enabled) { ApplicationArea = All; ToolTip = 'Specifies whether new configurations offer this option.'; }
                 field(DefaultChoiceCode; Rec."Default Choice Code") { ApplicationArea = All; ToolTip = 'Specifies the selectable choice preselected for a first configuration. Create its choice mapping in the lower grid first.'; }
                 field(DisplayOrder; Rec."Display Order") { ApplicationArea = All; ToolTip = 'Specifies the order in which options are displayed.'; }
@@ -102,11 +102,12 @@ page 91004 CF_CategoryTemplateOptions
     local procedure EnsureRoutingContext()
     var
         Item: Record Item;
+        TemplateMgt: Codeunit CF_TemplateMgt;
     begin
         if not RoutingContextReady then
             Error('Select a reference parent item and routing reference date before selecting a routing link. Location and variant are optional.');
         Item.Get(ReferenceItemNo);
-        Item.TestField("Item Category Code", Rec."Item Category Code");
+        TemplateMgt.CheckReference(Rec."Item Category Code", Item."No.");
     end;
 
     local procedure CheckRoutingLink()

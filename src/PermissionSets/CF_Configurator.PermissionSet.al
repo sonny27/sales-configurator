@@ -4,6 +4,14 @@ using Microsoft.Manufacturing.Document;
 using Microsoft.Manufacturing.ProductionBOM;
 using Microsoft.Manufacturing.Routing;
 using Microsoft.Sales.Document;
+using Microsoft.Inventory.BOM;
+using Microsoft.Inventory.BOM.Tree;
+using Microsoft.Inventory.Availability;
+using Microsoft.Inventory.Planning;
+using Microsoft.Inventory.Requisition;
+using Microsoft.Inventory.Costing;
+using Microsoft.Manufacturing.MachineCenter;
+using Microsoft.Manufacturing.WorkCenter;
 
 permissionset 91000 CF_Configurator
 {
@@ -15,6 +23,11 @@ permissionset 91000 CF_Configurator
         tabledata CF_DocumentLineProductConfig = RIMD,
         tabledata CF_ProductConfigHeader = Rimd,
         tabledata CF_SalesConfiguratorSetup = R,
+        tabledata CF_BOMBuffer = Rimd,
+        tabledata CF_ConfigTemplate = R,
+        tabledata CF_PromiseContext = Rimd,
+        tabledata "Work Center" = R,
+        tabledata "Machine Center" = R,
         tabledata "Routing Link" = R,
         tabledata "Routing Header" = R,
         tabledata "Routing Version" = R,
@@ -28,10 +41,17 @@ permissionset 91000 CF_Configurator
         table CF_ProductConfigHeader = X,
         table CF_SalesConfiguratorSetup = X,
         table CF_ConfiguredBOMLine = X,
+        table CF_BOMBuffer = X,
+        table CF_ConfigTemplate = X,
+        table CF_PromiseContext = X,
+        table CF_MaterialSupplyLine = X,
+        table "BOM Buffer" = X,
         table "Sales Line" = X,
         table "Routing Link" = X,
         table "Production Order" = X,
         table "Prod. Order Component" = X,
+        table "Requisition Line" = X,
+        table "Planning Component" = X,
         page CF_ConfiguratorBOMSetup = X,
         page CF_OptionChoiceLookup = X,
         page CF_ProductConfigurator = X,
@@ -40,6 +60,21 @@ permissionset 91000 CF_Configurator
         page CF_SalesConfiguratorSetup = X,
         page CF_ParentRoutingLinks = X,
         page CF_ConfiguredBOM = X,
+        page CF_BOMDraftEditor = X,
+        page CF_BOMDiagram = X,
+        page CF_ConfigTemplates = X,
+        page CF_NewConfigTemplate = X,
+        page CF_MaterialSupplyReview = X,
+        page "Order Promising Lines" = X,
+        page "Item Availability by Event" = X,
+        page "Item Availability by Periods" = X,
+        page "Item Availability by Variant" = X,
+        page "Item Availability by Location" = X,
+        page "Item Availability by Lot No." = X,
+        page "Item Availability by BOM Level" = X,
+        page "Item Availability by UOM" = X,
+        page "Work Center Card" = X,
+        page "Machine Center Card" = X,
         page "Sales Order Subform" = X,
         page "Sales Order" = X,
         page "Sales Quote" = X,
@@ -56,5 +91,25 @@ permissionset 91000 CF_Configurator
         codeunit CF_ConfiguratorMgt = X,
         codeunit CF_DocumentConfigMgt = X,
         codeunit CF_ConfigHeaderMgt = X,
+        codeunit CF_ConfigBOMMgt = X,
+        codeunit CF_BOMTreeMgt = X,
+        codeunit CF_BOMDraftMgt = X,
+        codeunit CF_BOMProductionMgt = X,
+        codeunit CF_TemplateMgt = X,
+        codeunit CF_ConfigAvailabilityMgt = X,
+        codeunit CF_PromisePlanMgt = X,
+        codeunit CF_MaterialSupplyMgt = X,
+        codeunit "Available to Promise" = X,
+        codeunit AvailabilityManagement = X,
+        codeunit "Sales Availability Mgt." = X,
+        codeunit "Item Availability Forms Mgt" = X,
+        codeunit "Capable to Promise" = X,
+        codeunit "Planning Line Management" = X,
+        codeunit "Mfg. Planning Line Management" = X,
+        codeunit "Mfg. Cost Calculation Mgt." = X,
+        codeunit "Calculate BOM Tree" = X,
+        codeunit "Mfg. Calculate BOM Tree" = X,
+        codeunit "Create Prod. Order Lines" = X,
+        codeunit "Calculate Prod. Order" = X,
         codeunit "Create Prod. Order from Sale" = X;
 }

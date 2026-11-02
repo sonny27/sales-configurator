@@ -75,7 +75,9 @@ codeunit 91005 CF_ConfigHeaderMgt
             Header."No." := '';
             CopyContext(Config, Header);
             Header.Insert(true);
-        end else
+        end else begin
+            Header.TestField("Template Code", Config.GetTemplateCode());
+            Header.TestField("Template Assignment", Config."Template Assignment");
             if (Header."Document No." <> Config."Document No.") or
                (Header."Document Line No." <> Config."Document Line No.") or
                (Header."Item Category Code" <> Config."Item Category Code") or
@@ -85,6 +87,7 @@ codeunit 91005 CF_ConfigHeaderMgt
                 CopyContext(Config, Header);
                 Header.Modify(true);
             end;
+        end;
         SyncSalesLineNumber(Header);
     end;
 
@@ -172,6 +175,8 @@ codeunit 91005 CF_ConfigHeaderMgt
     end;
 
     local procedure CopyContext(Config: Record CF_DocumentLineProductConfig; var Header: Record CF_ProductConfigHeader)
+    var
+        Template: Record CF_ConfigTemplate;
     begin
         Header."Document Type" := Config."Document Type";
         Header."Source Table ID" := Config."Source Table ID";
@@ -181,6 +186,12 @@ codeunit 91005 CF_ConfigHeaderMgt
         Header."Item Category Code" := Config."Item Category Code";
         Header."Parent Item No." := Config."Parent Item No.";
         Header."Parent Variant Code" := Config."Parent Variant Code";
+        Header."Template Code" := Config.GetTemplateCode();
+        Header."Template Assignment" := Config."Template Assignment";
+        if Header."Template Code" <> '' then begin
+            Template.Get(Header."Template Code");
+            Header."Template Assignment" := Template."Template Type";
+        end;
     end;
 
     var

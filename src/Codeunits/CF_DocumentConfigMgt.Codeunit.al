@@ -2,6 +2,7 @@ namespace CloudFactory.SalesConfigurator;
 
 using Microsoft.Inventory.Item;
 using Microsoft.Inventory.Location;
+using Microsoft.Inventory.Planning;
 using Microsoft.Manufacturing.Document;
 using Microsoft.Manufacturing.ProductionBOM;
 using Microsoft.Manufacturing.Routing;
@@ -9,7 +10,56 @@ using Microsoft.Sales.Document;
 
 codeunit 91001 CF_DocumentConfigMgt
 {
-    Permissions = tabledata CF_DocumentLineProductConfig = rimd;
+    Permissions = tabledata CF_DocumentLineProductConfig = rimd,
+                  tabledata "Sales Line" = rm;
+
+    procedure InitializeBase(var SalesLine: Record "Sales Line")
+    begin
+        if not SalesLine.CF_BaseSetupSet then
+            GetItemManufacturingSetup(SalesLine."No.", SalesLine."Location Code", SalesLine."Variant Code",
+                SalesLine.CF_BaseBOMNo, SalesLine.CF_BaseRoutingNo);
+    end;
+
+    procedure CopyBase(Source: Record "Sales Line"; var Target: Record "Sales Line")
+    begin
+        Target.CF_BaseBOMNo := Source.CF_BaseBOMNo;
+        Target.CF_BaseRoutingNo := Source.CF_BaseRoutingNo;
+        Target.CF_BaseSetupSet := Source.CF_BaseSetupSet;
+    end;
+
+    procedure StampBase(SalesLine: Record "Sales Line"; var Config: Record CF_DocumentLineProductConfig temporary)
+    var
+        OriginalView: Text;
+    begin
+        OriginalView := Config.GetView(false);
+        Config.Reset();
+        if Config.FindSet() then
+            repeat
+                Config."Base BOM" := SalesLine.CF_BaseBOMNo;
+                Config."Base Routing" := SalesLine.CF_BaseRoutingNo;
+                Config."Base Selection Set" := SalesLine.CF_BaseSetupSet;
+                Config.Modify(false);
+            until Config.Next() = 0;
+        Config.SetView(OriginalView);
+    end;
+
+    procedure ValidateBase(SalesLine: Record "Sales Line")
+    var
+        BOM: Record "Production BOM Header";
+        Routing: Record "Routing Header";
+        VersionMgt: Codeunit VersionManagement;
+    begin
+        if SalesLine.CF_BaseBOMNo <> '' then begin
+            BOM.Get(SalesLine.CF_BaseBOMNo);
+            if VersionMgt.GetBOMVersion(BOM."No.", WorkDate(), true) = '' then
+                BOM.TestField(Status, BOM.Status::Certified);
+        end;
+        if SalesLine.CF_BaseRoutingNo <> '' then begin
+            Routing.Get(SalesLine.CF_BaseRoutingNo);
+            if VersionMgt.GetRtngVersion(Routing."No.", WorkDate(), true) = '' then
+                Routing.TestField(Status, Routing.Status::Certified);
+        end;
+    end;
 
     procedure FilterSalesLine(SalesLine: Record "Sales Line"; var Config: Record CF_DocumentLineProductConfig)
     begin
@@ -22,6 +72,7 @@ codeunit 91001 CF_DocumentConfigMgt
     procedure ValidateForProduction(SalesLine: Record "Sales Line")
     var
         Config: Record CF_DocumentLineProductConfig;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
     begin
         SalesLine.TestField("Document Type", SalesLine."Document Type"::Order);
         ValidateSalesLine(SalesLine);
@@ -31,6 +82,22 @@ codeunit 91001 CF_DocumentConfigMgt
                 ValidateStoredRow(Config);
             until Config.Next() = 0;
         ValidateMandatory(SalesLine, Config);
+        DraftMgt.CheckChoices(SalesLine, Config);
+    end;
+
+    procedure ValidatePreview(SalesLine: Record "Sales Line"; var Choices: Record CF_DocumentLineProductConfig temporary)
+    var
+        Reader: Record CF_DocumentLineProductConfig temporary;
+    begin
+        ValidateSalesLine(SalesLine);
+        ValidateBase(SalesLine);
+        Reader.Copy(Choices, true);
+        Reader.Reset();
+        if Reader.FindSet() then
+            repeat
+                ValidateStoredRow(Reader);
+            until Reader.Next() = 0;
+        ValidateMandatory(SalesLine, Reader);
     end;
 
     procedure ValidateItem(ItemNo: Code[20]; VariantCode: Code[10]; UOM: Code[10])
@@ -41,8 +108,8 @@ codeunit 91001 CF_DocumentConfigMgt
     begin
         if (ItemNo = '') or not Item.Get(ItemNo) then
             Error('Configured component item %1 does not exist.', ItemNo);
-        if Item.Type <> Item.Type::Inventory then
-            Error('Configured component item %1 must be an inventory item.', ItemNo);
+        if not (Item.Type in [Item.Type::Inventory, Item.Type::"Non-Inventory"]) then
+            Error('Configured component item %1 must be an inventory or non-inventory item.', ItemNo);
         if Item.Blocked then
             Error('Configured component item %1 is blocked.', ItemNo);
         // Output-only blocking does not prohibit consumption. Unknown blocking values fail closed.
@@ -153,25 +220,32 @@ codeunit 91001 CF_DocumentConfigMgt
                 TempConfig := Config;
                 TempConfig.Insert(false, true);
             until Config.Next() = 0;
-        OpenConfiguredBOM(SalesLine, TempConfig, false);
+        OpenEditableBOM(SalesLine, TempConfig);
     end;
 
-    procedure ShowConfiguredBOM(SalesLine: Record "Sales Line"; var TempConfig: Record CF_DocumentLineProductConfig temporary)
+    procedure ShowConfiguredBOM(SalesLine: Record "Sales Line"; var TempConfig: Record CF_DocumentLineProductConfig temporary): Boolean
     begin
-        OpenConfiguredBOM(SalesLine, TempConfig, true);
+        exit(OpenEditableBOM(SalesLine, TempConfig));
+    end;
+
+    local procedure OpenEditableBOM(SalesLine: Record "Sales Line"; var TempConfig: Record CF_DocumentLineProductConfig temporary): Boolean
+    var
+        DraftMgt: Codeunit CF_BOMDraftMgt;
+    begin
+        ValidateSalesLine(SalesLine);
+        exit(DraftMgt.Open(SalesLine, TempConfig));
     end;
 
     local procedure OpenConfiguredBOM(SalesLine: Record "Sales Line"; var TempConfig: Record CF_DocumentLineProductConfig temporary; IncludesUnsavedChoices: Boolean)
     var
         CurrentSalesLine: Record "Sales Line";
         ItemUOM: Record "Item Unit of Measure";
-        BOMHeader: Record "Production BOM Header";
-        BOMVersion: Record "Production BOM Version";
-        BOMLine: Record "Production BOM Line";
         TempBOMLine: Record CF_ConfiguredBOMLine temporary;
+        RootPreviewLine: Record CF_ConfiguredBOMLine temporary;
         Reader: Record CF_DocumentLineProductConfig temporary;
         ComponentItem: Record Item;
         ComponentVariant: Record "Item Variant";
+        ComponentBOM: Record "Production BOM Header";
         VersionMgt: Codeunit VersionManagement;
         Preview: Page CF_ConfiguredBOM;
         BOMNo: Code[20];
@@ -179,6 +253,7 @@ codeunit 91001 CF_DocumentConfigMgt
         VersionCode: Code[20];
         BOMUOM: Code[10];
         NextLineNo: Integer;
+        BOMPath: List of [Code[20]];
     begin
         ValidateSalesLine(SalesLine);
         CurrentSalesLine.GetBySystemId(SalesLine.SystemId);
@@ -186,31 +261,14 @@ codeunit 91001 CF_DocumentConfigMgt
         GetItemManufacturingSetup(CurrentSalesLine."No.", CurrentSalesLine."Location Code", CurrentSalesLine."Variant Code", BOMNo, RoutingNo);
         if BOMNo = '' then
             Error(NoParentBOMErr, CurrentSalesLine."Document No.", CurrentSalesLine."Line No.", CurrentSalesLine."No.");
-        BOMHeader.Get(BOMNo);
-        VersionCode := VersionMgt.GetBOMVersion(BOMNo, CurrentSalesLine."Shipment Date", true);
-        if VersionCode = '' then
-            BOMHeader.TestField(Status, BOMHeader.Status::Certified)
-        else begin
-            BOMVersion.Get(BOMNo, VersionCode);
-            BOMVersion.TestField(Status, BOMVersion.Status::Certified);
-        end;
+        VersionCode := GetCertifiedBOMVersion(BOMNo, CurrentSalesLine."Shipment Date");
         BOMUOM := VersionMgt.GetBOMUnitOfMeasure(BOMNo, VersionCode);
         ItemUOM.Get(CurrentSalesLine."No.", BOMUOM);
         if ItemUOM."Qty. per Unit of Measure" <= 0 then
             ItemUOM.FieldError("Qty. per Unit of Measure", PositiveBOMUOMErr);
 
-        BOMLine.SetRange("Production BOM No.", BOMNo);
-        BOMLine.SetRange("Version Code", VersionCode);
-        BOMLine.SetFilter("Starting Date", '%1|..%2', 0D, CurrentSalesLine."Shipment Date");
-        BOMLine.SetFilter("Ending Date", '%1|%2..', 0D, CurrentSalesLine."Shipment Date");
-        if BOMLine.FindSet() then
-            repeat
-                NextLineNo += 10000;
-                TempBOMLine.Init();
-                TempBOMLine.TransferFields(BOMLine, false);
-                TempBOMLine."Line No." := NextLineNo;
-                TempBOMLine.Insert();
-            until BOMLine.Next() = 0;
+        RootPreviewLine.Indentation := -1;
+        AppendPreviewBOMLines(BOMNo, CurrentSalesLine."Shipment Date", RootPreviewLine, TempBOMLine, NextLineNo, BOMPath);
 
         Reader.Copy(TempConfig, true);
         Reader.Reset();
@@ -219,24 +277,30 @@ codeunit 91001 CF_DocumentConfigMgt
             repeat
                 ValidateContext(CurrentSalesLine, Reader);
                 if Reader."Choice Code" <> '' then begin
-                    ValidateItem(Reader."Component Item No.", Reader."Component Variant Code", Reader."Component UOM Code");
-                    if Reader."Quantity per Unit" <= 0 then
-                        Reader.FieldError("Quantity per Unit", PositiveBOMUOMErr);
+                    ValidateConfiguredComponent(CurrentSalesLine, Reader);
+                    ValidateConfigQuantity(Reader);
                     ValidateRoutingLink(CurrentSalesLine, Reader."Routing Link Code", Reader."Configuration Option");
-                    ComponentItem.Get(Reader."Component Item No.");
                     NextLineNo += 10000;
                     TempBOMLine.Init();
                     TempBOMLine."Line No." := NextLineNo;
                     TempBOMLine."Production BOM No." := BOMNo;
                     TempBOMLine."Version Code" := VersionCode;
-                    TempBOMLine.Type := TempBOMLine.Type::Item;
+                    TempBOMLine."Parent BOM Unit of Measure" := BOMUOM;
+                    TempBOMLine.Type := Reader."Component Type";
                     TempBOMLine."No." := Reader."Component Item No.";
-                    TempBOMLine.Description := ComponentItem.Description;
-                    TempBOMLine."Description 2" := ComponentItem."Description 2";
-                    if Reader."Component Variant Code" <> '' then begin
-                        ComponentVariant.Get(Reader."Component Item No.", Reader."Component Variant Code");
-                        TempBOMLine.Description := ComponentVariant.Description;
-                        TempBOMLine."Description 2" := ComponentVariant."Description 2";
+                    if Reader."Component Type" = Reader."Component Type"::"Production BOM" then begin
+                        ComponentBOM.Get(Reader."Component Item No.");
+                        TempBOMLine.Description := ComponentBOM.Description;
+                        TempBOMLine."Description 2" := ComponentBOM."Description 2";
+                    end else begin
+                        ComponentItem.Get(Reader."Component Item No.");
+                        TempBOMLine.Description := ComponentItem.Description;
+                        TempBOMLine."Description 2" := ComponentItem."Description 2";
+                        if Reader."Component Variant Code" <> '' then begin
+                            ComponentVariant.Get(Reader."Component Item No.", Reader."Component Variant Code");
+                            TempBOMLine.Description := ComponentVariant.Description;
+                            TempBOMLine."Description 2" := ComponentVariant."Description 2";
+                        end;
                     end;
                     TempBOMLine."Variant Code" := Reader."Component Variant Code";
                     TempBOMLine."Unit of Measure Code" := Reader."Component UOM Code";
@@ -246,11 +310,69 @@ codeunit 91001 CF_DocumentConfigMgt
                     TempBOMLine."Configuration Option" := Reader."Configuration Option";
                     TempBOMLine."Choice Code" := Reader."Choice Code";
                     TempBOMLine.Insert();
+                    if TempBOMLine.Type = TempBOMLine.Type::"Production BOM" then
+                        AppendPreviewBOMLines(TempBOMLine."No.", CurrentSalesLine."Shipment Date", TempBOMLine, TempBOMLine, NextLineNo, BOMPath);
                 end;
             until Reader.Next() = 0;
         TempBOMLine.Reset();
         Preview.SetPreview(TempBOMLine, CurrentSalesLine, BOMNo, VersionCode, BOMUOM, IncludesUnsavedChoices);
         Preview.RunModal();
+    end;
+
+    local procedure GetCertifiedBOMVersion(BOMNo: Code[20]; EffectiveDate: Date): Code[20]
+    var
+        BOMHeader: Record "Production BOM Header";
+        BOMVersion: Record "Production BOM Version";
+        VersionMgt: Codeunit VersionManagement;
+        VersionCode: Code[20];
+    begin
+        BOMHeader.Get(BOMNo);
+        VersionCode := VersionMgt.GetBOMVersion(BOMNo, EffectiveDate, true);
+        if VersionCode = '' then
+            BOMHeader.TestField(Status, BOMHeader.Status::Certified)
+        else begin
+            BOMVersion.Get(BOMNo, VersionCode);
+            BOMVersion.TestField(Status, BOMVersion.Status::Certified);
+        end;
+        exit(VersionCode);
+    end;
+
+    local procedure AppendPreviewBOMLines(BOMNo: Code[20]; EffectiveDate: Date; ParentLine: Record CF_ConfiguredBOMLine; var TempBOMLine: Record CF_ConfiguredBOMLine temporary; var NextLineNo: Integer; var BOMPath: List of [Code[20]])
+    var
+        BOMLine: Record "Production BOM Line";
+        ChildLine: Record CF_ConfiguredBOMLine temporary;
+        VersionMgt: Codeunit VersionManagement;
+        VersionCode: Code[20];
+        ParentUOM: Code[10];
+    begin
+        if BOMPath.Contains(BOMNo) then
+            Error('Circular Production BOM reference %1 prevents building the configured BOM preview.', BOMNo);
+        if BOMPath.Count() >= 50 then
+            Error('Production BOM %1 exceeds the maximum preview depth of 50 BOM levels.', BOMNo);
+        BOMPath.Add(BOMNo);
+        VersionCode := GetCertifiedBOMVersion(BOMNo, EffectiveDate);
+        ParentUOM := VersionMgt.GetBOMUnitOfMeasure(BOMNo, VersionCode);
+        BOMLine.SetRange("Production BOM No.", BOMNo);
+        BOMLine.SetRange("Version Code", VersionCode);
+        BOMLine.SetFilter("Starting Date", '%1|..%2', 0D, EffectiveDate);
+        BOMLine.SetFilter("Ending Date", '%1|%2..', 0D, EffectiveDate);
+        if BOMLine.FindSet() then
+            repeat
+                ChildLine.Init();
+                ChildLine.TransferFields(BOMLine, false);
+                NextLineNo += 10000;
+                ChildLine."Line No." := NextLineNo;
+                ChildLine.Indentation := ParentLine.Indentation + 1;
+                ChildLine."Parent BOM Unit of Measure" := ParentUOM;
+                ChildLine.Configured := ParentLine.Configured;
+                ChildLine."Configuration Option" := ParentLine."Configuration Option";
+                ChildLine."Choice Code" := ParentLine."Choice Code";
+                TempBOMLine := ChildLine;
+                TempBOMLine.Insert();
+                if ChildLine.Type = ChildLine.Type::"Production BOM" then
+                    AppendPreviewBOMLines(ChildLine."No.", EffectiveDate, ChildLine, TempBOMLine, NextLineNo, BOMPath);
+            until BOMLine.Next() = 0;
+        BOMPath.Remove(BOMNo);
     end;
 
     local procedure CheckProductionDemand(var SalesLine: Record "Sales Line")
@@ -289,6 +411,8 @@ codeunit 91001 CF_DocumentConfigMgt
         Config: Record CF_DocumentLineProductConfig;
         ProductionOrder: Record "Production Order";
         CurrentSalesLine: Record "Sales Line";
+        DraftMgt: Codeunit CF_BOMDraftMgt;
+        Header: Record CF_ProductConfigHeader;
     begin
         ValidateSalesLine(SalesLine);
         if GetLinkedProductionOrders(SalesLine, ProductionOrder) then begin
@@ -299,7 +423,7 @@ codeunit 91001 CF_DocumentConfigMgt
             exit(false);
         end;
         FilterSalesLine(SalesLine, Config);
-        if Config.IsEmpty() then begin
+        if Config.IsEmpty() and not DraftMgt.HasSaved(SalesLine.SystemId) then begin
             Message(NoSavedConfigMsg);
             exit(false);
         end;
@@ -313,6 +437,19 @@ codeunit 91001 CF_DocumentConfigMgt
         Config.LockTable();
         FilterSalesLine(CurrentSalesLine, Config);
         Config.DeleteAll(true);
+        DraftMgt.DeleteSaved(SalesLine.SystemId);
+        Header.SetRange("Source Table ID", Database::"Sales Line");
+        Header.SetRange("Source Line SystemId", SalesLine.SystemId);
+        if Header.FindFirst() then begin
+            Header.Delete(true);
+            CurrentSalesLine.CF_ProductConfigurationNo := '';
+            CurrentSalesLine.Modify(false);
+        end;
+        CurrentSalesLine.GetBySystemId(SalesLine.SystemId);
+        Clear(CurrentSalesLine.CF_BaseBOMNo);
+        Clear(CurrentSalesLine.CF_BaseRoutingNo);
+        CurrentSalesLine.CF_BaseSetupSet := false;
+        CurrentSalesLine.Modify(false);
         exit(true);
     end;
 
@@ -384,7 +521,7 @@ codeunit 91001 CF_DocumentConfigMgt
         GetSource(Config, SalesLine);
         ValidateContext(SalesLine, Config);
         Config.TestField("Configuration Option");
-        if not OptionSetup.Get(Config."Item Category Code", Config."Configuration Option") then
+        if not OptionSetup.Get(Config.GetTemplateCode(), Config."Configuration Option") then
             Error('Sales document %1, line %2: option %3 no longer exists. Clear this obsolete option explicitly in Product Configurator.',
                 Config."Document No.", Config."Document Line No.", Config."Configuration Option");
         if not OptionSetup.Enabled then
@@ -396,17 +533,27 @@ codeunit 91001 CF_DocumentConfigMgt
             exit;
         end;
         GetChoice(Config, Choice);
-        if (Config."Component Item No." <> Choice."Item No.") or
+        if (Config."Component Type" <> Choice.Type) or (Config."Component Item No." <> Choice."Item No.") or
            (Config."Component Variant Code" <> Choice."Variant Code") or
            (Config."Component UOM Code" <> Choice."Unit of Measure Code")
         then
             Error('Sales document %1, line %2, option %3, choice %4: the setup item/variant/UOM mapping changed. Explicitly reselect the choice and apply the configuration.',
                 Config."Document No.", Config."Document Line No.", Config."Configuration Option", Config."Choice Code");
-        ValidateItem(Config."Component Item No.", Config."Component Variant Code", Config."Component UOM Code");
-        if Config."Quantity per Unit" <= 0 then
-            Error('Sales document %1, line %2, option %3: selected quantity per unit must be positive.',
-                Config."Document No.", Config."Document Line No.", Config."Configuration Option");
+        ValidateConfiguredComponent(SalesLine, Config);
+        ValidateConfigQuantity(Config);
         ValidateRoutingLink(SalesLine, Config."Routing Link Code", Config."Configuration Option");
+    end;
+
+    procedure ValidateConfigQuantity(Config: Record CF_DocumentLineProductConfig)
+    var
+        Choice: Record CF_OptionChoiceLookup;
+    begin
+        if Config."Quantity per Unit" <= 0 then
+            Error('Quantity per unit must be positive for option %1.', Config."Configuration Option");
+        if Config."Choice Code" = '' then
+            exit;
+        GetChoice(Config, Choice);
+        Choice.CheckQuantity(Config."Quantity per Unit");
     end;
 
     procedure ValidateChoice(var Config: Record CF_DocumentLineProductConfig)
@@ -418,17 +565,40 @@ codeunit 91001 CF_DocumentConfigMgt
         ValidateContext(SalesLine, Config);
         EnsureEditable(SalesLine);
         if Config."Choice Code" = '' then begin
+            Config."Component Type" := Config."Component Type"::Item;
             Clear(Config."Component Item No.");
             Clear(Config."Component Variant Code");
             Clear(Config."Component UOM Code");
+            Config."Quantity per Unit" := 1;
             Clear(Config."Routing Link Code");
             exit;
         end;
         GetChoice(Config, Choice);
-        ValidateItem(Choice."Item No.", Choice."Variant Code", Choice."Unit of Measure Code");
+        Config."Component Type" := Choice.Type;
         Config."Component Item No." := Choice."Item No.";
         Config."Component Variant Code" := Choice."Variant Code";
         Config."Component UOM Code" := Choice."Unit of Measure Code";
+        Choice.Validate("Quantity per Unit");
+        // Zero is an incomplete worksheet default, never a valid applied component quantity.
+        Config."Quantity per Unit" := Choice."Quantity per Unit";
+        ValidateConfiguredComponent(SalesLine, Config);
+    end;
+
+    procedure ValidateConfiguredComponent(SalesLine: Record "Sales Line"; Config: Record CF_DocumentLineProductConfig)
+    var
+        VersionMgt: Codeunit VersionManagement;
+        VersionCode: Code[20];
+    begin
+        if not (Config."Component Type" in [Config."Component Type"::Item, Config."Component Type"::"Production BOM"]) then
+            Config.FieldError("Component Type", 'must be Item or Production BOM');
+        if Config."Component Type" = Config."Component Type"::Item then begin
+            ValidateItem(Config."Component Item No.", Config."Component Variant Code", Config."Component UOM Code");
+            exit;
+        end;
+        Config.TestField("Component Variant Code", '');
+        SalesLine.TestField("Shipment Date");
+        VersionCode := GetCertifiedBOMVersion(Config."Component Item No.", SalesLine."Shipment Date");
+        Config.TestField("Component UOM Code", VersionMgt.GetBOMUnitOfMeasure(Config."Component Item No.", VersionCode));
     end;
 
     procedure LookupChoice(var Config: Record CF_DocumentLineProductConfig): Boolean
@@ -436,7 +606,7 @@ codeunit 91001 CF_DocumentConfigMgt
         Choice: Record CF_OptionChoiceLookup;
         Choices: Page CF_OptionChoiceLookup;
     begin
-        Choice.SetRange("Item Category Code", Config."Item Category Code");
+        Choice.SetRange("Item Category Code", Config.GetTemplateCode());
         Choice.SetRange("Configuration Option", Config."Configuration Option");
         Choice.SetRange(Selectable, true);
         Choices.SetTableView(Choice);
@@ -449,19 +619,27 @@ codeunit 91001 CF_DocumentConfigMgt
     end;
 
     procedure GetAvailableRoutingLinks(SalesLine: Record "Sales Line"; var TempLink: Record "Routing Link" temporary)
+    var
+        RoutingLine: Record "Routing Line";
     begin
-        ValidateSalesLine(SalesLine);
-        GetAvailableItemRoutingLinks(SalesLine."No.", SalesLine."Location Code", SalesLine."Variant Code", SalesLine."Shipment Date", TempLink);
+        FilterParentRoutingLines(SalesLine, RoutingLine);
+        CollectRoutingLinks(RoutingLine, TempLink);
     end;
 
     procedure GetAvailableItemRoutingLinks(ItemNo: Code[20]; LocationCode: Code[10]; VariantCode: Code[10]; RoutingDate: Date; var TempLink: Record "Routing Link" temporary)
     var
         RoutingLine: Record "Routing Line";
+    begin
+        FilterItemRoutingLines(ItemNo, LocationCode, VariantCode, RoutingDate, RoutingLine);
+        CollectRoutingLinks(RoutingLine, TempLink);
+    end;
+
+    local procedure CollectRoutingLinks(var RoutingLine: Record "Routing Line"; var TempLink: Record "Routing Link" temporary)
+    var
         Link: Record "Routing Link";
     begin
         TempLink.Reset();
         TempLink.DeleteAll();
-        FilterItemRoutingLines(ItemNo, LocationCode, VariantCode, RoutingDate, RoutingLine);
         if RoutingLine.GetRangeMin("Routing No.") = '' then
             exit;
         RoutingLine.SetFilter("Routing Link Code", '<>%1', '');
@@ -479,13 +657,17 @@ codeunit 91001 CF_DocumentConfigMgt
     procedure LookupRoutingLink(var Config: Record CF_DocumentLineProductConfig): Boolean
     var
         SalesLine: Record "Sales Line";
+        TempLink: Record "Routing Link" temporary;
         LinkCode: Code[10];
     begin
         GetSource(Config, SalesLine);
         ValidateContext(SalesLine, Config);
         EnsureEditable(SalesLine);
         LinkCode := Config."Routing Link Code";
-        if not LookupItemRoutingLink(SalesLine."No.", SalesLine."Location Code", SalesLine."Variant Code", SalesLine."Shipment Date", LinkCode) then
+        GetAvailableRoutingLinks(SalesLine, TempLink);
+        if TempLink.IsEmpty() then
+            Error('No routing link codes are available on the selected base routing for item %1. Leave Routing Link Code blank, or select a routing with assigned links.', SalesLine."No.");
+        if not LookupRoutingLinks(TempLink, LinkCode) then
             exit(false);
         Config.Validate("Routing Link Code", LinkCode);
         exit(true);
@@ -494,12 +676,18 @@ codeunit 91001 CF_DocumentConfigMgt
     procedure LookupItemRoutingLink(ItemNo: Code[20]; LocationCode: Code[10]; VariantCode: Code[10]; RoutingDate: Date; var LinkCode: Code[10]): Boolean
     var
         TempLink: Record "Routing Link" temporary;
-        Links: Page CF_ParentRoutingLinks;
     begin
         GetAvailableItemRoutingLinks(ItemNo, LocationCode, VariantCode, RoutingDate, TempLink);
         if TempLink.IsEmpty() then
             Error('No routing link codes are available on the effective parent item/SKU routing for item %1, location %2, variant %3, date %4. Leave Routing Link Code blank, or maintain links on that routing.',
                 ItemNo, LocationCode, VariantCode, RoutingDate);
+        exit(LookupRoutingLinks(TempLink, LinkCode));
+    end;
+
+    local procedure LookupRoutingLinks(var TempLink: Record "Routing Link" temporary; var LinkCode: Code[10]): Boolean
+    var
+        Links: Page CF_ParentRoutingLinks;
+    begin
         Links.SetLinks(TempLink);
         if TempLink.Get(LinkCode) then
             Links.SetRecord(TempLink);
@@ -618,7 +806,6 @@ codeunit 91001 CF_DocumentConfigMgt
                 if IsCurrentOption(TempLoadedConfig, OptionSetup) then begin
                     TempLoadedConfig."Option Description" := OptionSetup."Option Description";
                     TempLoadedConfig."Display Order" := OptionSetup."Display Order";
-                    TempLoadedConfig.Validate("Quantity per Unit", OptionSetup."Quantity per Unit");
                     TempLoadedConfig."Routing Link Code" := OptionSetup."Routing Link Code";
                 end;
                 TempLoadedConfig.Modify();
@@ -635,7 +822,8 @@ codeunit 91001 CF_DocumentConfigMgt
             TempLoadedConfig."Option Description" := OptionSetup."Option Description";
             TempLoadedConfig."Display Order" := OptionSetup."Display Order";
             TempLoadedConfig.Validate("Choice Code", PreviousConfig."Choice Code");
-            if (TempLoadedConfig."Component Item No." <> PreviousConfig."Component Item No.") or
+            if (TempLoadedConfig."Component Type" <> PreviousConfig."Component Type") or
+               (TempLoadedConfig."Component Item No." <> PreviousConfig."Component Item No.") or
                (TempLoadedConfig."Component Variant Code" <> PreviousConfig."Component Variant Code") or
                (TempLoadedConfig."Component UOM Code" <> PreviousConfig."Component UOM Code")
             then
@@ -665,6 +853,7 @@ codeunit 91001 CF_DocumentConfigMgt
     procedure Load(SalesLine: Record "Sales Line"; var TempConfig: Record CF_DocumentLineProductConfig temporary)
     var
         Config: Record CF_DocumentLineProductConfig;
+        StoredSalesLine: Record "Sales Line";
         ApplyDefaults: Boolean;
     begin
         ValidateSalesLine(SalesLine);
@@ -674,12 +863,14 @@ codeunit 91001 CF_DocumentConfigMgt
         ApplyDefaults := Config.IsEmpty();
         if Config.FindSet() then
             repeat
-                GetSource(Config, SalesLine);
-                ValidateContext(SalesLine, Config);
+                GetSource(Config, StoredSalesLine);
+                ValidateContext(StoredSalesLine, Config);
                 TempConfig := Config;
                 TempConfig.Insert(false, true);
             until Config.Next() = 0;
         AddTemplateOptions(SalesLine, TempConfig, ApplyDefaults);
+        InitializeBase(SalesLine);
+        StampBase(SalesLine, TempConfig);
     end;
 
     procedure RefreshTemplate(SalesLine: Record "Sales Line"; var TempConfig: Record CF_DocumentLineProductConfig temporary)
@@ -689,6 +880,8 @@ codeunit 91001 CF_DocumentConfigMgt
         ValidateSalesLine(SalesLine);
         FilterSalesLine(SalesLine, Config);
         AddTemplateOptions(SalesLine, TempConfig, Config.IsEmpty());
+        InitializeBase(SalesLine);
+        StampBase(SalesLine, TempConfig);
     end;
 
     procedure CanMaintainTemplates(): Boolean
@@ -701,41 +894,48 @@ codeunit 91001 CF_DocumentConfigMgt
 
     procedure OpenCategoryTemplate(CategoryCode: Code[20])
     var
-        SalesLine: Record "Sales Line";
+        Template: Record CF_ConfigTemplate;
+        Wizard: Page CF_NewConfigTemplate;
+        Designer: Page CF_CategoryTemplateDesigner;
     begin
-        OpenCategoryTemplate(CategoryCode, SalesLine);
+        if not CanMaintainTemplates() then
+            Error('You need Product Configurator Setup permissions to maintain templates.');
+        Template.SetRange("Template Type", Template."Template Type"::ItemCategory);
+        Template.SetRange("Item Category Code", CategoryCode);
+        if not Template.FindFirst() then begin
+            Wizard.SetAssignment(CF_TemplateAssignment::ItemCategory, '', CategoryCode);
+            if Wizard.RunModal() <> Action::OK then
+                exit;
+            Wizard.GetTemplate(Template);
+            Commit();
+        end;
+        Designer.SetRecord(Template);
+        Designer.RunModal();
     end;
 
     procedure OpenCategoryTemplate(CategoryCode: Code[20]; SalesLine: Record "Sales Line")
     var
-        Category: Record "Item Category";
-        Item: Record Item;
-        Designer: Page CF_CategoryTemplateDesigner;
+        TemplateMgt: Codeunit CF_TemplateMgt;
     begin
         if not CanMaintainTemplates() then
-            Error('You need Product Configurator Setup permissions to maintain category templates.');
-        if CategoryCode = '' then
-            Error('Assign an Item Category Code to the parent item before maintaining its category template.');
-        Category.Get(CategoryCode);
-        Designer.SetRecord(Category);
-        if SalesLine."No." <> '' then begin
-            ValidateSalesLine(SalesLine);
-            Item.Get(SalesLine."No.");
-            if Item."Item Category Code" <> CategoryCode then
-                Error('The category template must match the sales-line parent item category.');
-            Designer.SetSalesLineContext(SalesLine);
-        end;
-        Designer.RunModal();
+            Error('You need Product Configurator Setup permissions to maintain templates.');
+        ValidateSalesLine(SalesLine);
+        TemplateMgt.OpenForSalesLine(SalesLine);
     end;
 
     local procedure AddTemplateOptions(SalesLine: Record "Sales Line"; var TempConfig: Record CF_DocumentLineProductConfig temporary; ApplyDefaults: Boolean)
     var
         OptionSetup: Record CF_ConfiguratorBOM;
         Item: Record Item;
+        TemplateMgt: Codeunit CF_TemplateMgt;
+        TemplateCode: Code[20];
     begin
         Item.Get(SalesLine."No.");
         TempConfig.Reset();
-        OptionSetup.SetRange("Item Category Code", Item."Item Category Code");
+        TemplateCode := TemplateMgt.Resolve(SalesLine);
+        if TemplateCode = '' then
+            exit;
+        OptionSetup.SetRange("Item Category Code", TemplateCode);
         OptionSetup.SetRange(Enabled, true);
         if OptionSetup.FindSet() then
             repeat
@@ -743,11 +943,11 @@ codeunit 91001 CF_DocumentConfigMgt
                     TempConfig.Init();
                     SetSource(SalesLine, TempConfig);
                     TempConfig."Item Category Code" := Item."Item Category Code";
+                    TemplateMgt.Stamp(SalesLine, TempConfig);
                     TempConfig."Parent Item No." := SalesLine."No.";
                     TempConfig."Parent Variant Code" := SalesLine."Variant Code";
                     TempConfig."Configuration Option" := OptionSetup."Configuration Option";
                     TempConfig."Option Description" := OptionSetup."Option Description";
-                    TempConfig."Quantity per Unit" := OptionSetup."Quantity per Unit";
                     TempConfig."Routing Link Code" := OptionSetup."Routing Link Code";
                     TempConfig."Display Order" := OptionSetup."Display Order";
                     if ApplyDefaults and (OptionSetup."Default Choice Code" <> '') then
@@ -766,6 +966,7 @@ codeunit 91001 CF_DocumentConfigMgt
         Config: Record CF_DocumentLineProductConfig;
         Existing: Record CF_DocumentLineProductConfig;
         OptionSetup: Record CF_ConfiguratorBOM;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
         SelectionId: Guid;
     begin
         CurrentSalesLine.LockTable();
@@ -773,6 +974,13 @@ codeunit 91001 CF_DocumentConfigMgt
             Error('The source sales line no longer exists.');
         ValidateSalesLine(CurrentSalesLine);
         EnsureEditable(CurrentSalesLine);
+        if SalesLine.CF_BaseSetupSet then begin
+            CopyBase(SalesLine, CurrentSalesLine);
+            ValidateBase(CurrentSalesLine);
+            CurrentSalesLine.Modify(false);
+            StampBase(CurrentSalesLine, TempConfig);
+        end;
+        DraftMgt.CheckChoices(CurrentSalesLine, TempConfig);
         Config.LockTable();
         TempConfig.Reset();
         if TempConfig.FindSet() then
@@ -870,27 +1078,44 @@ codeunit 91001 CF_DocumentConfigMgt
             Error('The configuration document type does not match its source sales line.');
         if (Config."Document No." <> SalesLine."Document No.") or (Config."Document Line No." <> SalesLine."Line No.") then
             Error('Configuration source identifiers do not match sales document %1, line %2.', SalesLine."Document No.", SalesLine."Line No.");
+        if Config."Base Selection Set" and Config.IsTemporary() then begin
+            SalesLine.CF_BaseBOMNo := Config."Base BOM";
+            SalesLine.CF_BaseRoutingNo := Config."Base Routing";
+            SalesLine.CF_BaseSetupSet := true;
+        end;
     end;
 
     local procedure SetSource(SalesLine: Record "Sales Line"; var Config: Record CF_DocumentLineProductConfig)
+    var
+        Item: Record Item;
     begin
         Config."Document Type" := GetConfigDocumentType(SalesLine);
         Config."Source Table ID" := Database::"Sales Line";
         Config."Source Line SystemId" := SalesLine.SystemId;
         Config."Document No." := SalesLine."Document No.";
         Config."Document Line No." := SalesLine."Line No.";
+        Item.Get(SalesLine."No.");
+        Config."Parent Item No." := SalesLine."No.";
+        Config."Parent Variant Code" := SalesLine."Variant Code";
+        Config."Item Category Code" := Item."Item Category Code";
+        Config."Base BOM" := SalesLine.CF_BaseBOMNo;
+        Config."Base Routing" := SalesLine.CF_BaseRoutingNo;
+        Config."Base Selection Set" := SalesLine.CF_BaseSetupSet;
     end;
 
     local procedure ValidateContext(SalesLine: Record "Sales Line"; Config: Record CF_DocumentLineProductConfig)
     var
         Item: Record Item;
+        TemplateMgt: Codeunit CF_TemplateMgt;
     begin
         Item.Get(SalesLine."No.");
         if (Config."Document Type" <> GetConfigDocumentType(SalesLine)) or
            (Config."Source Table ID" <> Database::"Sales Line") or (Config."Source Line SystemId" <> SalesLine.SystemId) or
            (Config."Document No." <> SalesLine."Document No.") or (Config."Document Line No." <> SalesLine."Line No.") or
            (Config."Parent Item No." <> SalesLine."No.") or (Config."Parent Variant Code" <> SalesLine."Variant Code") or
-           (Config."Item Category Code" <> Item."Item Category Code")
+           (Config."Item Category Code" <> Item."Item Category Code") or
+           (Config.GetTemplateCode() <> TemplateMgt.Resolve(SalesLine)) or
+           (Config."Template Assignment" <> TemplateMgt.AssignmentType(SalesLine))
         then
             Error('Sales document %1, line %2, option %3 has stale source, parent item, variant, or category context. Configuration must not be silently reused.',
                 SalesLine."Document No.", SalesLine."Line No.", Config."Configuration Option");
@@ -901,10 +1126,10 @@ codeunit 91001 CF_DocumentConfigMgt
         OptionSetup: Record CF_ConfiguratorBOM;
     begin
         if not IsCurrentOption(Config, OptionSetup) then
-            Error('Option %1 in category %2 is missing or disabled.', Config."Configuration Option", Config."Item Category Code");
-        if not Choice.Get(Config."Item Category Code", Config."Configuration Option", Config."Choice Code") then
-            Error('Sales document %1, line %2: choice %3 does not exist for category %4, option %5.',
-                Config."Document No.", Config."Document Line No.", Config."Choice Code", Config."Item Category Code", Config."Configuration Option");
+            Error('Option %1 in template %2 is missing or disabled.', Config."Configuration Option", Config.GetTemplateCode());
+        if not Choice.Get(Config.GetTemplateCode(), Config."Configuration Option", Config."Choice Code") then
+            Error('Sales document %1, line %2: choice %3 does not exist for template %4, option %5.',
+                Config."Document No.", Config."Document Line No.", Config."Choice Code", Config.GetTemplateCode(), Config."Configuration Option");
         if not Choice.Selectable then
             Error('Sales document %1, line %2: choice %3 for option %4 is not selectable.',
                 Config."Document No.", Config."Document Line No.", Config."Choice Code", Config."Configuration Option");
@@ -912,7 +1137,7 @@ codeunit 91001 CF_DocumentConfigMgt
 
     local procedure IsCurrentOption(Config: Record CF_DocumentLineProductConfig; var OptionSetup: Record CF_ConfiguratorBOM): Boolean
     begin
-        if not OptionSetup.Get(Config."Item Category Code", Config."Configuration Option") then
+        if not OptionSetup.Get(Config.GetTemplateCode(), Config."Configuration Option") then
             exit(false);
         exit(OptionSetup.Enabled);
     end;
@@ -921,9 +1146,14 @@ codeunit 91001 CF_DocumentConfigMgt
     var
         Item: Record Item;
         OptionSetup: Record CF_ConfiguratorBOM;
+        TemplateMgt: Codeunit CF_TemplateMgt;
+        TemplateCode: Code[20];
     begin
         Item.Get(SalesLine."No.");
-        OptionSetup.SetRange("Item Category Code", Item."Item Category Code");
+        TemplateCode := TemplateMgt.Resolve(SalesLine);
+        if TemplateCode = '' then
+            exit;
+        OptionSetup.SetRange("Item Category Code", TemplateCode);
         OptionSetup.SetRange(Enabled, true);
         if OptionSetup.FindSet() then
             repeat
@@ -957,21 +1187,56 @@ codeunit 91001 CF_DocumentConfigMgt
                 SalesLine."Document No.", SalesLine."Line No.", OptionCode, LinkCode, RoutingNo, RoutingLine.GetRangeMin("Version Code"));
     end;
 
+    procedure GetRoutingOperations(SalesLine: Record "Sales Line"; LinkCode: Code[10]): Text
+    var
+        RoutingLine: Record "Routing Line";
+        Operations: Text;
+    begin
+        if LinkCode = '' then
+            exit('');
+        FilterParentRoutingLines(SalesLine, RoutingLine);
+        if RoutingLine.GetRangeMin("Routing No.") = '' then
+            exit('');
+        RoutingLine.SetCurrentKey("Routing No.", "Version Code", "Operation No.");
+        RoutingLine.SetRange("Routing Link Code", LinkCode);
+        if RoutingLine.FindSet() then
+            repeat
+                if Operations <> '' then
+                    Operations += '; ';
+                Operations += RoutingLine."Operation No.";
+                if RoutingLine.Description <> '' then
+                    Operations += ' - ' + RoutingLine.Description;
+            until RoutingLine.Next() = 0;
+        exit(Operations);
+    end;
+
     procedure FilterParentRoutingLines(SalesLine: Record "Sales Line"; var RoutingLine: Record "Routing Line")
+    var
+        RoutingNo: Code[20];
     begin
         ValidateSalesLine(SalesLine);
-        FilterItemRoutingLines(SalesLine."No.", SalesLine."Location Code", SalesLine."Variant Code", SalesLine."Shipment Date", RoutingLine);
+        if SalesLine.CF_BaseSetupSet then begin
+            RoutingNo := SalesLine.CF_BaseRoutingNo;
+            FilterRoutingLines(RoutingNo, SalesLine."Shipment Date", RoutingLine);
+        end else
+            FilterItemRoutingLines(SalesLine."No.", SalesLine."Location Code", SalesLine."Variant Code", SalesLine."Shipment Date", RoutingLine);
     end;
 
     local procedure FilterItemRoutingLines(ItemNo: Code[20]; LocationCode: Code[10]; VariantCode: Code[10]; RoutingDate: Date; var RoutingLine: Record "Routing Line")
     var
-        RoutingHeader: Record "Routing Header";
-        VersionMgt: Codeunit VersionManagement;
         BOMNo: Code[20];
         RoutingNo: Code[20];
-        VersionCode: Code[20];
     begin
         GetItemManufacturingSetup(ItemNo, LocationCode, VariantCode, BOMNo, RoutingNo);
+        FilterRoutingLines(RoutingNo, RoutingDate, RoutingLine);
+    end;
+
+    local procedure FilterRoutingLines(RoutingNo: Code[20]; RoutingDate: Date; var RoutingLine: Record "Routing Line")
+    var
+        RoutingHeader: Record "Routing Header";
+        VersionMgt: Codeunit VersionManagement;
+        VersionCode: Code[20];
+    begin
         if RoutingNo <> '' then begin
             VersionCode := VersionMgt.GetRtngVersion(RoutingNo, RoutingDate, true);
             if VersionCode = '' then begin
@@ -1068,8 +1333,9 @@ codeunit 91001 CF_DocumentConfigMgt
     local procedure CleanupConfigHeader(var Rec: Record CF_DocumentLineProductConfig; RunTrigger: Boolean)
     var
         HeaderMgt: Codeunit CF_ConfigHeaderMgt;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
     begin
-        if not Rec.IsTemporary() then
+        if not Rec.IsTemporary() and not DraftMgt.HasSaved(Rec."Source Line SystemId") then
             HeaderMgt.RemoveEmptyHeader(Rec);
     end;
 
@@ -1097,6 +1363,7 @@ codeunit 91001 CF_DocumentConfigMgt
     local procedure GuardSalesLineChange(var Rec: Record "Sales Line"; var xRec: Record "Sales Line"; RunTrigger: Boolean)
     var
         Config: Record CF_DocumentLineProductConfig;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
     begin
         if Rec.IsTemporary() then
             exit;
@@ -1104,6 +1371,10 @@ codeunit 91001 CF_DocumentConfigMgt
             ValidateSalesLineNumber(Rec);
         if not (xRec."Document Type" in [xRec."Document Type"::Order, xRec."Document Type"::Quote]) then
             exit;
+        if (Rec.CF_BaseBOMNo <> xRec.CF_BaseBOMNo) or (Rec.CF_BaseRoutingNo <> xRec.CF_BaseRoutingNo) or
+           (Rec.CF_BaseSetupSet <> xRec.CF_BaseSetupSet)
+        then
+            EnsureEditable(xRec);
         if (Rec.Type = xRec.Type) and (Rec."No." = xRec."No.") and
            (Rec."Variant Code" = xRec."Variant Code") and (Rec."Item Category Code" = xRec."Item Category Code") and
            (Rec."Location Code" = xRec."Location Code") and (Rec."Unit of Measure Code" = xRec."Unit of Measure Code") and
@@ -1112,7 +1383,7 @@ codeunit 91001 CF_DocumentConfigMgt
             exit;
         EnsureEditable(xRec);
         FilterSalesLine(xRec, Config);
-        if not Config.IsEmpty() then
+        if not Config.IsEmpty() or DraftMgt.HasSaved(xRec.SystemId) then
             Error('Sales document %1, line %2 has saved configuration. Its item, type, variant, category, location, UOM, and document type cannot be changed. Delete its saved configuration first to configure a different parent.',
                 xRec."Document No.", xRec."Line No.");
     end;
@@ -1121,6 +1392,7 @@ codeunit 91001 CF_DocumentConfigMgt
     local procedure CleanupSalesLine(var Rec: Record "Sales Line"; RunTrigger: Boolean)
     var
         Config: Record CF_DocumentLineProductConfig;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
     begin
         if Rec.IsTemporary() then
             exit;
@@ -1129,6 +1401,7 @@ codeunit 91001 CF_DocumentConfigMgt
         FilterSalesLine(Rec, Config);
         // Posting deletes source lines; the production snapshot is independent.
         Config.DeleteAll(false);
+        DraftMgt.DeleteSaved(Rec.SystemId);
     end;
 
     [EventSubscriber(ObjectType::Table, Database::"Sales Line", 'OnBeforeRenameEvent', '', false, false)]
@@ -1145,6 +1418,9 @@ codeunit 91001 CF_DocumentConfigMgt
     local procedure SyncSalesLineRename(var Rec: Record "Sales Line"; var xRec: Record "Sales Line"; RunTrigger: Boolean)
     var
         Config: Record CF_DocumentLineProductConfig;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
+        HeaderMgt: Codeunit CF_ConfigHeaderMgt;
+        TemplateMgt: Codeunit CF_TemplateMgt;
     begin
         if Rec.IsTemporary() then
             exit;
@@ -1156,6 +1432,11 @@ codeunit 91001 CF_DocumentConfigMgt
                 SetSource(Rec, Config);
                 Config.Modify(false);
             until Config.Next() = 0;
+        if DraftMgt.HasSaved(Rec.SystemId) then begin
+            SetSource(Rec, Config);
+            TemplateMgt.Stamp(Rec, Config);
+            HeaderMgt.EnsureHeader(Config);
+        end;
     end;
 
     [EventSubscriber(ObjectType::Table, Database::Item, 'OnBeforeModifyEvent', '', false, false)]
@@ -1163,6 +1444,8 @@ codeunit 91001 CF_DocumentConfigMgt
     var
         Config: Record CF_DocumentLineProductConfig;
         ProductionOrder: Record "Production Order";
+        Header: Record CF_ProductConfigHeader;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
     begin
         if Rec.IsTemporary() or (Rec."Item Category Code" = xRec."Item Category Code") then
             exit;
@@ -1177,13 +1460,23 @@ codeunit 91001 CF_DocumentConfigMgt
         if Config.FindFirst() then
             Error('Item %1 has saved configuration on sales order %2, line %3. Its category cannot be changed while these selections exist.',
                 Rec."No.", Config."Document No.", Config."Document Line No.");
+        Header.SetRange("Parent Item No.", Rec."No.");
+        if Header.FindSet() then
+            repeat
+                if DraftMgt.HasSaved(Header."Source Line SystemId") then
+                    Error('Item %1 has a saved BOM structure on configuration %2. Delete its configuration before changing the item category.', Rec."No.", Header."No.");
+            until Header.Next() = 0;
     end;
 
     [EventSubscriber(ObjectType::Table, Database::"Sales Line", 'OnBeforeInsertEvent', '', false, false)]
     local procedure ClearCopiedSalesLineNumber(var Rec: Record "Sales Line"; RunTrigger: Boolean)
     begin
-        if not Rec.IsTemporary() then
+        if not Rec.IsTemporary() then begin
             Clear(Rec.CF_ProductConfigurationNo);
+            Clear(Rec.CF_BaseBOMNo);
+            Clear(Rec.CF_BaseRoutingNo);
+            Rec.CF_BaseSetupSet := false;
+        end;
     end;
 
     local procedure ValidateSalesLineNumber(SalesLine: Record "Sales Line")
@@ -1209,11 +1502,26 @@ codeunit 91001 CF_DocumentConfigMgt
         TempOrderConfig: Record CF_DocumentLineProductConfig temporary;
         ExistingOrderConfig: Record CF_DocumentLineProductConfig;
         HeaderMgt: Codeunit CF_ConfigHeaderMgt;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
+        TemplateMgt: Codeunit CF_TemplateMgt;
     begin
         if SalesQuoteLine.IsTemporary() or SalesOrderLine.IsTemporary() then
             exit;
         FilterSalesLine(SalesQuoteLine, QuoteConfig);
         if not QuoteConfig.FindSet(true) then begin
+            if DraftMgt.HasSaved(SalesQuoteLine.SystemId) then begin
+                ValidateSalesLine(SalesQuoteLine);
+                ValidateSalesLine(SalesOrderLine);
+                CopyBase(SalesQuoteLine, SalesOrderLine);
+                SalesOrderLine.Modify(false);
+                SetSource(SalesOrderLine, TempOrderConfig);
+                TemplateMgt.Stamp(SalesQuoteLine, TempOrderConfig);
+                HeaderMgt.MoveQuoteHeader(SalesQuoteLine, SalesOrderLine, TempOrderConfig);
+                ValidateMandatory(SalesOrderLine, TempOrderConfig);
+                DraftMgt.MoveSaved(SalesQuoteLine.SystemId, SalesOrderLine.SystemId);
+                SalesOrderLine.GetBySystemId(SalesOrderLine.SystemId);
+                exit;
+            end;
             if SalesQuoteLine.CF_ProductConfigurationNo <> '' then
                 Error('The quote line has a configuration number but no saved choices. Correct its configuration before Make Order.');
             exit;
@@ -1223,19 +1531,21 @@ codeunit 91001 CF_DocumentConfigMgt
         FilterSalesLine(SalesOrderLine, ExistingOrderConfig);
         if not ExistingOrderConfig.IsEmpty() then
             Error('The new sales order line already has configuration. Quote configuration cannot overwrite it.');
+        CopyBase(SalesQuoteLine, SalesOrderLine);
+        SalesOrderLine.Modify(false);
         repeat
             ValidateStoredRow(QuoteConfig);
             TempOrderConfig := QuoteConfig;
             SetSource(SalesOrderLine, TempOrderConfig);
-            ValidateStoredRow(TempOrderConfig);
             TempOrderConfig.Insert(false, true);
         until QuoteConfig.Next() = 0;
-        ValidateMandatory(SalesOrderLine, TempOrderConfig);
         TempOrderConfig.FindFirst();
         HeaderMgt.MoveQuoteHeader(SalesQuoteLine, SalesOrderLine, TempOrderConfig);
+        ValidateMandatory(SalesOrderLine, TempOrderConfig);
         // Remove old rows before inserting their preserved selection SystemIds on the order.
         QuoteConfig.DeleteAll(true);
         Save(SalesOrderLine, TempOrderConfig);
+        DraftMgt.MoveSaved(SalesQuoteLine.SystemId, SalesOrderLine.SystemId);
         SalesOrderLine.GetBySystemId(SalesOrderLine.SystemId);
     end;
 }

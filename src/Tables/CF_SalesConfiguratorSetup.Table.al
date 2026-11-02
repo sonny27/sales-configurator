@@ -33,6 +33,16 @@ table 91004 CF_SalesConfiguratorSetup
             Caption = 'Enable';
             InitValue = false;
         }
+        field(5; "Config. Template Assign By"; Enum CF_TemplateAssignment)
+        {
+            Caption = 'Config. Template Assign By';
+            InitValue = ItemCategory;
+        }
+        field(6; "Material Receipt Policy"; Enum CF_MaterialReceiptPolicy)
+        {
+            Caption = 'Material Receipt Policy';
+            InitValue = OnTime;
+        }
     }
     keys
     {

@@ -7,6 +7,7 @@ using Microsoft.Inventory.Planning;
 using Microsoft.Inventory.Tracking;
 using Microsoft.Manufacturing.Capacity;
 using Microsoft.Manufacturing.Document;
+using Microsoft.Manufacturing.ProductionBOM;
 using Microsoft.Sales.Document;
 
 codeunit 91000 CF_ConfiguratorMgt
@@ -43,6 +44,7 @@ codeunit 91000 CF_ConfiguratorMgt
         OrderLine: Record "Sales Line";
         Config: Record CF_DocumentLineProductConfig;
         DocumentConfigMgt: Codeunit CF_DocumentConfigMgt;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
     begin
         if OrderType = OrderType::ItemOrder then
             exit;
@@ -53,7 +55,7 @@ codeunit 91000 CF_ConfiguratorMgt
             repeat
                 DocumentConfigMgt.FilterSalesLine(OrderLine, Config);
                 Config.SetFilter("Choice Code", '<>%1', '');
-                if not Config.IsEmpty() then
+                if not Config.IsEmpty() or DraftMgt.HasSaved(OrderLine.SystemId) then
                     Error(ProjectErr, SalesLine."Document No.");
             until OrderLine.Next() = 0;
     end;
@@ -66,24 +68,39 @@ codeunit 91000 CF_ConfiguratorMgt
         Entry: JsonObject;
         Entries: JsonArray;
         Output: OutStream;
+        SnapshotVersion: Integer;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
     begin
         ProdOrder.TestField(CF_ConfigVersion, 0);
         DocumentConfigMgt.FilterSalesLine(SalesLine, Config);
         Config.SetFilter("Choice Code", '<>%1', '');
-        if not Config.FindSet() then
+        if Config.IsEmpty() and not DraftMgt.HasSaved(SalesLine.SystemId) then
             exit;
-        repeat
-            Clear(Entry);
-            Entry.Add('selectionId', Format(Config.SystemId));
-            Entry.Add('option', Config."Configuration Option");
-            Entry.Add('choice', Config."Choice Code");
-            Entry.Add('item', Config."Component Item No.");
-            Entry.Add('variant', Config."Component Variant Code");
-            Entry.Add('uom', Config."Component UOM Code");
-            Entry.Add('quantityPer', Config."Quantity per Unit");
-            Entry.Add('routingLink', Config."Routing Link Code");
-            Entries.Add(Entry);
-        until Config.Next() = 0;
+        SnapshotVersion := 1;
+        if Config.FindSet() then
+            repeat
+                if Config."Component Type" = Config."Component Type"::"Production BOM" then
+                    SnapshotVersion := 2;
+            until Config.Next() = 0;
+        if DraftMgt.HasSaved(SalesLine.SystemId) then
+            SnapshotVersion := 3;
+        if (SnapshotVersion = 3) and SalesLine.CF_BaseSetupSet then
+            ProdOrder."Routing No." := SalesLine.CF_BaseRoutingNo;
+        if Config.FindSet() then
+            repeat
+                Clear(Entry);
+                Entry.Add('selectionId', Format(Config.SystemId));
+                Entry.Add('option', Config."Configuration Option");
+                Entry.Add('choice', Config."Choice Code");
+                Entry.Add('item', Config."Component Item No.");
+                Entry.Add('variant', Config."Component Variant Code");
+                Entry.Add('uom', Config."Component UOM Code");
+                Entry.Add('quantityPer', Config."Quantity per Unit");
+                Entry.Add('routingLink', Config."Routing Link Code");
+                if SnapshotVersion >= 2 then
+                    Entry.Add('componentType', Config."Component Type".AsInteger());
+                Entries.Add(Entry);
+            until Config.Next() = 0;
         ProdOrder.CF_DocumentType := ProdOrder.CF_DocumentType::SalesOrder;
         ProdOrder.CF_SourceTableId := Database::"Sales Line";
         ProdOrder.CF_SourceLineId := SalesLine.SystemId;
@@ -91,15 +108,17 @@ codeunit 91000 CF_ConfiguratorMgt
         ProdOrder.CF_DocumentLineNo := SalesLine."Line No.";
         ProdOrder.CF_ParentItemNo := SalesLine."No.";
         ProdOrder.CF_ParentVariantCode := SalesLine."Variant Code";
-        Snapshot.Add('version', 1);
+        Snapshot.Add('version', SnapshotVersion);
         Snapshot.Add('sourceLineId', Format(SalesLine.SystemId));
         Snapshot.Add('parentItem', SalesLine."No.");
         Snapshot.Add('parentVariant', SalesLine."Variant Code");
         Snapshot.Add('entries', Entries);
+        if SnapshotVersion = 3 then
+            DraftMgt.WriteSnapshot(SalesLine.SystemId, Snapshot);
         Clear(ProdOrder.CF_ConfigSnapshot);
         ProdOrder.CF_ConfigSnapshot.CreateOutStream(Output, TextEncoding::UTF8);
         Snapshot.WriteTo(Output);
-        ProdOrder.CF_ConfigVersion := 1;
+        ProdOrder.CF_ConfigVersion := SnapshotVersion;
         // This transaction-scoped flag is cleared after Copy; a failed creation rolls it back.
         ProdOrder.CF_RebuildAllowed := true;
     end;
@@ -122,6 +141,7 @@ codeunit 91000 CF_ConfiguratorMgt
         if ErrorOccured then
             Error(CalculationErr, ProdOrder."No.");
         ApplyConfiguredComponents(ProdOrder);
+        CheckConfiguredStructure(ProdOrder);
         ProdOrder.CF_RebuildAllowed := false;
         ProdOrder.Modify();
     end;
@@ -147,6 +167,8 @@ codeunit 91000 CF_ConfiguratorMgt
         if ErrorOccured then
             Error(CalculationErr, ProductionOrder."No.");
         ApplyConfiguredComponents(ProductionOrder);
+        if CalcLines or CalcComponents then
+            CheckConfiguredStructure(ProductionOrder);
         ProductionOrder.CF_RebuildAllowed := false;
         ProductionOrder.Modify();
     end;
@@ -164,7 +186,7 @@ codeunit 91000 CF_ConfiguratorMgt
     [EventSubscriber(ObjectType::Table, Database::"Prod. Order Component", 'OnAfterProdOrderNeeds', '', false, false)]
     local procedure ConfiguredNeeds(ProdOrderComponent: Record "Prod. Order Component"; ProdOrderLine: Record "Prod. Order Line"; ProdOrderRoutingLine: Record "Prod. Order Routing Line"; var NeededQty: Decimal)
     begin
-        if ProdOrderComponent.CF_ConfiguredComponent then
+        if ProdOrderComponent.CF_ConfiguredComponent and not ProdOrderComponent.CF_ProductionBOMChoice then
             NeededQty := ProdOrderLine.Quantity;
     end;
 
@@ -227,10 +249,13 @@ codeunit 91000 CF_ConfiguratorMgt
         SelectionId: Guid;
         SourceId: Guid;
         SeenIds: List of [Guid];
+        Structure: Record CF_BOMBuffer temporary;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
     begin
         TempConfig.Reset();
         TempConfig.DeleteAll();
-        ProdOrder.TestField(CF_ConfigVersion, 1);
+        if not (ProdOrder.CF_ConfigVersion in [1, 2, 3]) then
+            Error(SnapshotErr, ProdOrder."No.", 'Unsupported configuration version');
         ProdOrder.TestField(CF_SourceTableId, Database::"Sales Line");
         ProdOrder.TestField(CF_DocumentType, ProdOrder.CF_DocumentType::SalesOrder);
         if IsNullGuid(ProdOrder.CF_SourceLineId) then
@@ -243,7 +268,7 @@ codeunit 91000 CF_ConfiguratorMgt
             Error(SnapshotErr, ProdOrder."No.", 'Invalid JSON');
         RequireValue(Snapshot, 'version', Token, ProdOrder."No.");
         Version := Token.AsValue().AsInteger();
-        if Version <> 1 then
+        if not (Version in [1, 2, 3]) or (Version <> ProdOrder.CF_ConfigVersion) then
             Error(SnapshotErr, ProdOrder."No.", 'Unsupported schema version');
         if not Evaluate(SourceId, ReadText(Snapshot, 'sourceLineId', 50, ProdOrder."No.")) then
             Error(SnapshotErr, ProdOrder."No.", 'Invalid source line identity');
@@ -258,7 +283,7 @@ codeunit 91000 CF_ConfiguratorMgt
         if not Token.IsArray() then
             Error(SnapshotErr, ProdOrder."No.", 'Entries must be an array');
         Entries := Token.AsArray();
-        if Entries.Count() = 0 then
+        if (Entries.Count() = 0) and (Version <> 3) then
             Error(SnapshotErr, ProdOrder."No.", 'Empty configured snapshot');
         for Index := 0 to Entries.Count() - 1 do begin
             Entries.Get(Index, Token);
@@ -276,6 +301,13 @@ codeunit 91000 CF_ConfiguratorMgt
             TempConfig."Configuration Option" := ReadText(Entry, 'option', 10, ProdOrder."No.");
             TempConfig."Choice Code" := ReadText(Entry, 'choice', 20, ProdOrder."No.");
             TempConfig."Component Item No." := ReadText(Entry, 'item', 20, ProdOrder."No.");
+            TempConfig."Component Type" := TempConfig."Component Type"::Item;
+            if Version >= 2 then begin
+                RequireValue(Entry, 'componentType', Token, ProdOrder."No.");
+                if not (Token.AsValue().AsInteger() in [1, 2]) then
+                    Error(SnapshotErr, ProdOrder."No.", 'Invalid component type');
+                TempConfig."Component Type" := "Production BOM Line Type".FromInteger(Token.AsValue().AsInteger());
+            end;
             TempConfig."Component Variant Code" := ReadText(Entry, 'variant', 10, ProdOrder."No.");
             TempConfig."Component UOM Code" := ReadText(Entry, 'uom', 10, ProdOrder."No.");
             TempConfig."Routing Link Code" := ReadText(Entry, 'routingLink', 10, ProdOrder."No.");
@@ -296,6 +328,8 @@ codeunit 91000 CF_ConfiguratorMgt
             TempConfig.SystemId := SelectionId;
             TempConfig.Insert(false, true);
         end;
+        if Version = 3 then
+            DraftMgt.ReadSnapshot(ProdOrder, Structure);
     end;
 
     local procedure RequireValue(Object: JsonObject; Name: Text; var Token: JsonToken; OrderNo: Code[20])
@@ -326,6 +360,7 @@ codeunit 91000 CF_ConfiguratorMgt
         RootLine: Record "Prod. Order Line";
         Component: Record "Prod. Order Component";
         Desired: Record "Prod. Order Component";
+        BOMMgt: Codeunit CF_ConfigBOMMgt;
     begin
         if ProdOrder.CF_ConfigVersion = 0 then
             exit;
@@ -343,26 +378,52 @@ codeunit 91000 CF_ConfiguratorMgt
         if RootLine.Count() <> 1 then
             Error(RootErr, ProdOrder."No.", ProdOrder.CF_ParentItemNo, ProdOrder.CF_ParentVariantCode);
         RootLine.FindFirst();
+        if ProdOrder.CF_ConfigVersion = 3 then
+            exit;
         Component.LockTable();
         if TempConfig.FindSet() then
             repeat
-                BuildComponent(RootLine, TempConfig, Desired);
-                Component.Reset();
-                Component.SetRange(Status, RootLine.Status);
-                Component.SetRange("Prod. Order No.", RootLine."Prod. Order No.");
-                Component.SetRange("Prod. Order Line No.", RootLine."Line No.");
-                Component.SetRange(CF_ConfigSelectionId, TempConfig.SystemId);
-                if Component.Count() > 1 then
-                    Error(DuplicateErr, ProdOrder."No.", TempConfig."Configuration Option");
-                if Component.FindFirst() then begin
-                    Component.TestField(CF_ConfiguredComponent, true);
-                    if not SameComponent(Component, Desired) then begin
-                        CheckUnprocessedComponent(Component);
-                        UpdateComponent(Component, Desired);
+                if TempConfig."Component Type" = TempConfig."Component Type"::"Production BOM" then begin
+                    Component.Reset();
+                    Component.SetRange(Status, RootLine.Status);
+                    Component.SetRange("Prod. Order No.", RootLine."Prod. Order No.");
+                    Component.SetRange("Prod. Order Line No.", RootLine."Line No.");
+                    Component.SetRange(CF_ConfigSelectionId, TempConfig.SystemId);
+                    if Component.IsEmpty() and ProdOrder.CF_RebuildAllowed then begin
+                        Clear(BOMMgt);
+                        BOMMgt.SetSelection(TempConfig);
+                        BindSubscription(BOMMgt);
+                        BOMMgt.Explode(RootLine);
+                        UnbindSubscription(BOMMgt);
+                        RootLine.Get(RootLine.Status, RootLine."Prod. Order No.", RootLine."Line No.");
                     end;
-                end else
-                    Desired.Insert(true);
+                end else begin
+                    BuildComponent(RootLine, TempConfig, Desired);
+                    Component.Reset();
+                    Component.SetRange(Status, RootLine.Status);
+                    Component.SetRange("Prod. Order No.", RootLine."Prod. Order No.");
+                    Component.SetRange("Prod. Order Line No.", RootLine."Line No.");
+                    Component.SetRange(CF_ConfigSelectionId, TempConfig.SystemId);
+                    if Component.Count() > 1 then
+                        Error(DuplicateErr, ProdOrder."No.", TempConfig."Configuration Option");
+                    if Component.FindFirst() then begin
+                        Component.TestField(CF_ConfiguredComponent, true);
+                        if not SameComponent(Component, Desired) then begin
+                            CheckUnprocessedComponent(Component);
+                            UpdateComponent(Component, Desired);
+                        end;
+                    end else
+                        Desired.Insert(true);
+                end;
             until TempConfig.Next() = 0;
+    end;
+
+    local procedure CheckConfiguredStructure(var ProductionOrder: Record "Production Order")
+    var
+        CreateLines: Codeunit "Create Prod. Order Lines";
+    begin
+        CreateLines.CheckStructure(ProductionOrder.Status.AsInteger(), ProductionOrder."No.", 1, true, false);
+        ProductionOrder.Get(ProductionOrder.Status, ProductionOrder."No.");
     end;
 
     local procedure BuildComponent(RootLine: Record "Prod. Order Line"; Config: Record CF_DocumentLineProductConfig; var Component: Record "Prod. Order Component")
@@ -382,6 +443,7 @@ codeunit 91000 CF_ConfiguratorMgt
         Component.InitNewLine(LastComponent);
         Component."Line No." := LastComponent."Line No." + 10000;
         Component.CF_ConfiguredComponent := true;
+        Component.CF_ProductionBOMChoice := Config."Component Type" = Config."Component Type"::"Production BOM";
         Component.CF_ConfigSelectionId := Config.SystemId;
         Component.CF_ConfigOption := Config."Configuration Option";
         PlanningParameters.AtSKU(ParentSKU, RootLine."Item No.", RootLine."Variant Code", RootLine."Location Code");
@@ -421,6 +483,7 @@ codeunit 91000 CF_ConfiguratorMgt
              (Component."Routing Link Code" = Desired."Routing Link Code") and
              (Component."Due Date" = Desired."Due Date") and
              (Component."Due Time" = Desired."Due Time") and
+             (Component.CF_ProductionBOMChoice = Desired.CF_ProductionBOMChoice) and
              (Component.CF_ConfigOption = Desired.CF_ConfigOption));
     end;
 
@@ -438,6 +501,7 @@ codeunit 91000 CF_ConfiguratorMgt
         Component."Due Date" := Desired."Due Date";
         Component."Due Time" := Desired."Due Time";
         Component.CF_ConfigOption := Desired.CF_ConfigOption;
+        Component.CF_ProductionBOMChoice := Desired.CF_ProductionBOMChoice;
         Component.GetDefaultBin();
         Component.UpdateDatetime();
         Component.Modify(true);

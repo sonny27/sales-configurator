@@ -6,14 +6,13 @@ using Microsoft.Sales.Document;
 
 page 91003 CF_CategoryTemplateDesigner
 {
-    Caption = 'Category Template Designer';
+    Caption = 'Configuration Template Designer';
     PageType = Card;
-    SourceTable = "Item Category";
-    SourceTableTemporary = true;
+    SourceTable = CF_ConfigTemplate;
     InsertAllowed = false;
     DeleteAllowed = false;
     ApplicationArea = All;
-    UsageCategory = Administration;
+    UsageCategory = None;
 
     layout
     {
@@ -21,30 +20,16 @@ page 91003 CF_CategoryTemplateDesigner
         {
             group(Category)
             {
-                Caption = 'Item Category';
-                field(ItemCategoryCode; SelectedCategory)
+                Caption = 'Template';
+                field(TemplateCode; Rec.Code)
                 {
-                    Caption = 'Item Category Code';
                     ApplicationArea = All;
-                    Editable = not FromSalesLine;
-                    TableRelation = "Item Category";
-                    ToolTip = 'Select the category whose shared default template you want to maintain. This does not change any item or sales line.';
-                    trigger OnValidate()
-                    var
-                        ItemCategory: Record "Item Category";
-                    begin
-                        ItemCategory.Get(SelectedCategory);
-                        if Rec.Code <> '' then
-                            Rec.Delete(false);
-                        Rec := ItemCategory;
-                        Rec.Insert(false);
-                        Clear(ReferenceItemNo);
-                        Clear(ReferenceLocationCode);
-                        Clear(ReferenceVariantCode);
-                        UpdateRoutingContext();
-                        CurrPage.Update(false);
-                    end;
+                    Editable = false;
+                    ToolTip = 'Specifies the template being maintained. Use Configuration Templates to create or copy a template.';
                 }
+                field(TemplateType; Rec."Template Type") { ApplicationArea = All; Editable = false; ToolTip = 'Specifies the item or category assignment chosen when the template was created.'; }
+                field(ItemNo; Rec."Item No.") { ApplicationArea = All; Editable = false; ShowMandatory = ItemTemplate; ToolTip = 'Specifies the required inventory item for an Item No. template.'; }
+                field(ItemCategoryCode; Rec."Item Category Code") { ApplicationArea = All; Editable = false; ShowMandatory = not ItemTemplate; ToolTip = 'Specifies the required item category for an Item Category template.'; }
                 group(RoutingReference)
                 {
                     Caption = 'Routing Reference';
@@ -53,8 +38,8 @@ page 91003 CF_CategoryTemplateDesigner
                         Caption = 'Reference Parent Item No.';
                         ApplicationArea = All;
                         Editable = not FromSalesLine;
-                        TableRelation = Item where("Item Category Code" = field(Code), Type = const(Inventory));
-                        ToolTip = 'Select a parent item in this category to filter routing links. This reference does not make the shared template item-specific.';
+                        TableRelation = Item where(Type = const(Inventory));
+                        ToolTip = 'Select the assigned item, or an item in the assigned category, to filter routing links.';
                         trigger OnValidate()
                         begin
                             Clear(ReferenceVariantCode);
@@ -123,8 +108,8 @@ page 91003 CF_CategoryTemplateDesigner
                 {
                     Caption = 'Description';
                     ApplicationArea = All;
-                    Editable = false;
-                    ToolTip = 'Specifies the standard item category description.';
+                    Editable = true;
+                    ToolTip = 'Specifies the configuration template description.';
                 }
             }
             part(Options; CF_CategoryTemplateOptions)
@@ -143,20 +128,50 @@ page 91003 CF_CategoryTemplateDesigner
         }
     }
 
+    actions
+    {
+        area(Processing)
+        {
+            action(CopyTemplate)
+            {
+                Caption = 'Copy Template';
+                ApplicationArea = All;
+                AccessByPermission = tabledata CF_ConfiguratorBOM = M;
+                Image = Copy;
+                ToolTip = 'Copy this template, including options, choices and routing links, to a new or empty destination.';
+                trigger OnAction()
+                var
+                    Wizard: Page CF_NewConfigTemplate;
+                    Target: Record CF_ConfigTemplate;
+                begin
+                    CurrPage.SaveRecord();
+                    Commit();
+                    Wizard.SetCopySource(Rec);
+                    if Wizard.RunModal() = Action::OK then begin
+                        Wizard.GetTemplate(Target);
+                        Commit();
+                        Page.RunModal(Page::CF_CategoryTemplateDesigner, Target);
+                    end;
+                end;
+            }
+        }
+        area(Promoted)
+        {
+            actionref(CopyPromoted; CopyTemplate) { }
+        }
+    }
+
     trigger OnOpenPage()
     var
         Mgt: Codeunit CF_DocumentConfigMgt;
-        ItemCategory: Record "Item Category";
     begin
         if not Mgt.CanMaintainTemplates() then
-            Error('You need Product Configurator Setup permissions to maintain category templates.');
-        if Rec.Code <> '' then
-            ItemCategory.Get(Rec.Code)
-        else
-            if not ItemCategory.FindFirst() then
-                Error('Create an Item Category before maintaining a category template.');
-        Rec := ItemCategory;
-        Rec.Insert(false);
+            Error('You need Product Configurator Setup permissions to maintain templates.');
+        Rec.Get(Rec.Code);
+        Rec.SetRange(Code, Rec.Code);
+        ItemTemplate := Rec."Template Type" = Rec."Template Type"::SalesLineItem;
+        if ItemTemplate and not FromSalesLine then
+            ReferenceItemNo := Rec."Item No.";
         if not FromSalesLine then
             ReferenceDate := WorkDate();
         CurrPage.Editable(true);
@@ -164,7 +179,6 @@ page 91003 CF_CategoryTemplateDesigner
 
     trigger OnAfterGetCurrRecord()
     begin
-        SelectedCategory := Rec.Code;
         UpdateRoutingContext();
     end;
 
@@ -188,7 +202,7 @@ page 91003 CF_CategoryTemplateDesigner
             exit;
         end;
         Item.Get(ReferenceItemNo);
-        Item.TestField("Item Category Code", Rec.Code);
+        TemplateMgt.CheckReference(Rec.Code, ReferenceItemNo);
         Item.TestField(Type, Item.Type::Inventory);
         if ReferenceVariantCode <> '' then
             Variant.Get(ReferenceItemNo, ReferenceVariantCode);
@@ -201,7 +215,8 @@ page 91003 CF_CategoryTemplateDesigner
     end;
 
     var
-        SelectedCategory: Code[20];
+        TemplateMgt: Codeunit CF_TemplateMgt;
+        ItemTemplate: Boolean;
         FromSalesLine: Boolean;
         ReferenceItemNo: Code[20];
         ReferenceLocationCode: Code[10];

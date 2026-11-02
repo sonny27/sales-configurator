@@ -41,6 +41,30 @@ page 91009 CF_SalesConfiguratorSetup
                     ApplicationArea = All;
                     ToolTip = 'Specifies whether the Product Configurator menu and Product Configuration No. column are available on sales order and sales quote lines. Reopen the sales document after changing this setting.';
                 }
+                field(TemplateAssignBy; Rec."Config. Template Assign By")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Specifies how NEW configurations resolve their template: by sales-line item number or the item category. Saved configurations retain their original template.';
+                }
+                field(MaterialReceiptPolicy; Rec."Material Receipt Policy")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Specifies whether Create Material Supply counts only purchase/transfer receipts due by the material required date, or all outstanding purchase/transfer receipts including late ones. Inventory and other scheduled supply remain date-specific.';
+                }
+            }
+        }
+    }
+    actions
+    {
+        area(Navigation)
+        {
+            action(Templates)
+            {
+                Caption = 'Configuration Templates';
+                ApplicationArea = All;
+                Image = Template;
+                RunObject = page CF_ConfigTemplates;
+                ToolTip = 'Create, maintain and copy item-specific or category-specific templates.';
             }
         }
     }

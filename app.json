@@ -2,7 +2,7 @@
     "id": "fb4152c2-9d4b-440e-8529-68f23d95334a",
     "name": "Sales Configurator",
     "publisher": "Cloud Factory",
-    "version": "1.0.0.10",
+    "version": "1.0.0.38",
     "brief": "",
     "description": "",
     "privacyStatement": "",
@@ -10,7 +10,14 @@
     "help": "",
     "url": "",
     "logo": "",
-    "dependencies": [],
+    "dependencies": [
+        {
+            "appId": "02f80526-1dda-40d6-adb3-6b8e6d0bd332",
+            "name": "Graphical Scheduler",
+            "publisher": "Insight Works",
+            "version": "2.2.9764.1"
+        }
+    ],
     "screenshots": [],
     "platform": "1.0.0.0",
     "application": "29.0.0.0",

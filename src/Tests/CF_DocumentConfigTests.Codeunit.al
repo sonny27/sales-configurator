@@ -1,9 +1,14 @@
 namespace CloudFactory.SalesConfigurator;
 
 using Microsoft.Inventory.Item;
+using Microsoft.Inventory.Ledger;
 using Microsoft.Inventory.Location;
+using Microsoft.Inventory.Planning;
+using Microsoft.Inventory.Requisition;
+using Microsoft.Inventory.Tracking;
 using Microsoft.Manufacturing.Document;
 using Microsoft.Manufacturing.Routing;
+using Microsoft.Purchases.Document;
 using Microsoft.Sales.Document;
 using Microsoft.Foundation.UOM;
 
@@ -20,8 +25,7 @@ codeunit 91003 CF_DocumentConfigTests
         Choice: Record CF_OptionChoiceLookup;
     begin
         CreateFixture(SalesLine, Choice);
-        Choice."Mandatory Values" := CF_MandatoryValues::ChoiceCode;
-        Choice.Modify(true);
+        SetMandatoryValues(Choice, CF_MandatoryValues::ChoiceCode);
 
         asserterror Mgt.ValidateForProduction(SalesLine);
         AssertErrorContains('mandatory option WOOD requires a choice');
@@ -328,8 +332,7 @@ codeunit 91003 CF_DocumentConfigTests
     begin
         CreateFixture(SalesLine, Choice);
         SetDefault(Choice, 'BLUE');
-        Choice."Mandatory Values" := CF_MandatoryValues::ChoiceCode;
-        Choice.Modify(true);
+        SetMandatoryValues(Choice, CF_MandatoryValues::ChoiceCode);
 
         Mgt.Load(SalesLine, TempConfig);
         GetWood(SalesLine, TempConfig);
@@ -588,7 +591,7 @@ codeunit 91003 CF_DocumentConfigTests
         Designer.Options.New();
         Designer.Options.ConfigurationOption.SetValue('LEGS');
         Designer.Options.OptionDescription.SetValue('Leg style');
-        Designer.Options.QuantityPerUnit.SetValue(4);
+        Designer.Options.MandatoryValues.SetValue(CF_MandatoryValues::ChoiceCodeAndQuantity);
         Designer.Options.SaveOption.Invoke();
         OptionSetup.Get(ExistingChoice."Item Category Code", 'LEGS');
         Designer.Options.GoToRecord(OptionSetup);
@@ -600,14 +603,16 @@ codeunit 91003 CF_DocumentConfigTests
         Designer.Choices.New();
         Designer.Choices.ChoiceCode.SetValue('STANDARD');
         Designer.Choices.ItemNo.SetValue(ExistingChoice."Item No.");
+        Designer.Choices.QuantityPerUnit.SetValue(4);
         Designer.Choices.SaveChoice.Invoke();
         Designer.Options.DefaultChoiceCode.SetValue('STANDARD');
         Designer.Close();
 
         OptionSetup.Get(ExistingChoice."Item Category Code", 'LEGS');
-        AssertTrue(OptionSetup."Quantity per Unit" = 4, 'The designer must persist the option quantity.');
+        AssertTrue(OptionSetup."Mandatory Values" = CF_MandatoryValues::ChoiceCodeAndQuantity, 'The designer must persist the option mandatory rule.');
         AssertTrue(OptionSetup."Default Choice Code" = 'STANDARD', 'The designer must persist the default.');
         NewChoice.Get(ExistingChoice."Item Category Code", 'LEGS', 'STANDARD');
+        AssertTrue(NewChoice."Quantity per Unit" = 4, 'The designer must persist the choice quantity.');
         AssertTrue(NewChoice."Item No." = ExistingChoice."Item No.", 'Choice creation must inherit the selected category and option.');
     end;
 
@@ -1409,8 +1414,7 @@ codeunit 91003 CF_DocumentConfigTests
         TempConfig: Record CF_DocumentLineProductConfig temporary;
     begin
         CreateFixture(SalesLine, Choice);
-        Choice."Mandatory Values" := CF_MandatoryValues::ChoiceCode;
-        Choice.Modify(true);
+        SetMandatoryValues(Choice, CF_MandatoryValues::ChoiceCode);
         Mgt.Load(SalesLine, TempConfig);
         GetWood(SalesLine, TempConfig);
         AssertTrue(TempConfig.GetStyleText() = 'Unfavorable', 'A blank mandatory choice must be red.');
@@ -1418,11 +1422,9 @@ codeunit 91003 CF_DocumentConfigTests
         AssertTrue(TempConfig.GetStyleText() = 'Favorable', 'A populated mandatory choice must be green.');
         TempConfig.Validate("Choice Code", '');
         AssertTrue(TempConfig.GetStyleText() = 'Unfavorable', 'Clearing a mandatory choice must restore red styling.');
-        Choice."Mandatory Values" := CF_MandatoryValues::None;
-        Choice.Modify(true);
+        SetMandatoryValues(Choice, CF_MandatoryValues::None);
         AssertTrue(TempConfig.GetStyleText() = 'Standard', 'Changing the mandatory values to None must use current setup without reloading the selection.');
-        Choice."Mandatory Values" := CF_MandatoryValues::ChoiceCode;
-        Choice.Modify(true);
+        SetMandatoryValues(Choice, CF_MandatoryValues::ChoiceCode);
         AssertTrue(TempConfig.GetStyleText() = 'Unfavorable', 'Restoring mandatory Choice Code must restore red styling for a blank choice.');
     end;
 
@@ -1453,8 +1455,7 @@ codeunit 91003 CF_DocumentConfigTests
     begin
         CreateFixture(SalesLine, Choice);
         SaveChoice(SalesLine, 'BLUE');
-        Choice."Mandatory Values" := CF_MandatoryValues::ChoiceCode;
-        Choice.Modify(true);
+        SetMandatoryValues(Choice, CF_MandatoryValues::ChoiceCode);
         OptionSetup.Get(Choice."Item Category Code", 'WOOD');
         OptionSetup.Enabled := false;
         OptionSetup.Modify(true);
@@ -1473,8 +1474,7 @@ codeunit 91003 CF_DocumentConfigTests
     begin
         CreateFixture(SalesLine, Choice);
         SetDefault(Choice, 'BLUE');
-        Choice."Mandatory Values" := CF_MandatoryValues::ChoiceCodeAndQuantity;
-        Choice.Modify(true);
+        SetMandatoryValues(Choice, CF_MandatoryValues::ChoiceCodeAndQuantity);
         Mgt.Load(SalesLine, TempConfig);
         GetWood(SalesLine, TempConfig);
         AssertTrue(TempConfig.GetStyleText() = 'Favorable', 'A mandatory preselected default must be green before Apply.');
@@ -1491,8 +1491,7 @@ codeunit 91003 CF_DocumentConfigTests
     begin
         CreateFixture(SalesLine, Choice);
         AddOptionWithDefault(Choice, 'OTHER', OtherChoice);
-        OtherChoice."Mandatory Values" := CF_MandatoryValues::ChoiceCode;
-        OtherChoice.Modify(true);
+        SetMandatoryValues(OtherChoice, CF_MandatoryValues::ChoiceCode);
         Mgt.Load(SalesLine, TempConfig);
         TempConfig.Get(Enum::CF_ConfigDocumentType::SalesOrder, Database::"Sales Line", SalesLine.SystemId, 'OTHER');
         AssertTrue(TempConfig.GetStyleText() = 'Favorable', 'A populated mandatory row must be green.');
@@ -1503,6 +1502,507 @@ codeunit 91003 CF_DocumentConfigTests
         AssertTrue(TempConfig.GetStyleText() = 'Unfavorable', 'A cleared mandatory row must be red.');
         GetWood(SalesLine, TempConfig);
         AssertTrue(TempConfig.GetStyleText() = 'Standard', 'An optional row must not inherit red styling either.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure ComponentValidationAcceptsNonInventory()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Component: Record Item;
+    begin
+        CreateFixture(SalesLine, Choice);
+        Component.Get(Choice."Item No.");
+        Component.Type := Component.Type::"Non-Inventory";
+        Component.Modify(false);
+
+        Mgt.ValidateItem(Component."No.", '', Choice."Unit of Measure Code");
+        Choice.Validate("Item No.", Component."No.");
+        Choice.Modify(true);
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure ComponentValidationRejectsService()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Component: Record Item;
+    begin
+        CreateFixture(SalesLine, Choice);
+        Component.Get(Choice."Item No.");
+        Component.Type := Component.Type::Service;
+        Component.Modify(false);
+
+        asserterror Mgt.ValidateItem(Component."No.", '', Choice."Unit of Measure Code");
+        AssertErrorContains('must be an inventory or non-inventory item');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure BOMRootStillRequiresInventory()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        ParentItem: Record Item;
+        Rows: Record CF_BOMBuffer temporary;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
+        Tree: Codeunit CF_BOMTreeMgt;
+    begin
+        CreateFixture(SalesLine, Choice);
+        ParentItem.Get(SalesLine."No.");
+        ParentItem.Type := ParentItem.Type::"Non-Inventory";
+        ParentItem.Modify(false);
+        Rows."Source Line ID" := SalesLine.SystemId;
+        Rows."Node ID" := CreateGuid();
+        Rows.Type := Rows.Type::Item;
+        Rows."No." := SalesLine."No.";
+        Rows."Unit of Measure Code" := SalesLine."Unit of Measure Code";
+        Rows."Quantity per" := 1;
+        Rows."Sort Order" := 10000;
+        Rows."Source Context" := Tree.Context(SalesLine);
+        Rows.Insert(false);
+
+        asserterror DraftMgt.ValidateTree(SalesLine, Rows);
+        AssertErrorContains('Inventory');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure AvailabilityPreviewIncludesUnappliedChoices()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Config: Record CF_DocumentLineProductConfig temporary;
+        Rows: Record CF_BOMBuffer temporary;
+        Stored: Record CF_DocumentLineProductConfig;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
+    begin
+        CreateFixture(SalesLine, Choice);
+        Mgt.Load(SalesLine, Config);
+        GetWood(SalesLine, Config);
+        Config.Validate("Choice Code", Choice.Code);
+        Config.Validate("Quantity per Unit", 2);
+        Config.Modify(false);
+
+        DraftMgt.GetPreview(SalesLine, Config, Rows);
+        Rows.SetRange("Choice Root", true);
+        Rows.FindFirst();
+        AssertTrue(Rows."No." = Choice."Item No.", 'Availability must use the current unapplied component.');
+        AssertTrue(Rows."Quantity per" = 2, 'Availability must use the current unapplied quantity.');
+        Mgt.FilterSalesLine(SalesLine, Stored);
+        AssertTrue(Stored.IsEmpty(), 'Opening availability must not apply choices.');
+        AssertTrue(not DraftMgt.HasSaved(SalesLine.SystemId), 'Opening availability must not create a saved draft.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure PromisingContextFreezesItsBOM()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Config: Record CF_DocumentLineProductConfig temporary;
+        Rows: Record CF_BOMBuffer temporary;
+        Frozen: Record CF_BOMBuffer temporary;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
+        PlanMgt: Codeunit CF_PromisePlanMgt;
+        ContextId: Guid;
+    begin
+        CreateFixture(SalesLine, Choice);
+        Mgt.Load(SalesLine, Config);
+        GetWood(SalesLine, Config);
+        Config.Validate("Choice Code", Choice.Code);
+        Config.Validate("Quantity per Unit", 2);
+        Config.Modify(false);
+        DraftMgt.GetPreview(SalesLine, Config, Rows);
+        ContextId := CreateGuid();
+        PlanMgt.StoreContext(ContextId, SalesLine, Rows);
+        Rows.SetRange("Choice Root", true);
+        Rows.FindFirst();
+        Rows."Quantity per" := 9;
+        Rows.Modify(false);
+
+        PlanMgt.ReadContext(ContextId, Frozen);
+        Frozen.SetRange("Choice Root", true);
+        Frozen.FindFirst();
+        AssertTrue(Frozen."Quantity per" = 2, 'Accepted planning must retain its own immutable structure.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure ConfiguredPlanningExplodesChoicesWithoutBaseBOM()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Item: Record Item;
+        Config: Record CF_DocumentLineProductConfig temporary;
+        Rows: Record CF_BOMBuffer temporary;
+        ReqLine: Record "Requisition Line";
+        Component: Record "Planning Component";
+        DraftMgt: Codeunit CF_BOMDraftMgt;
+        PlanMgt: Codeunit CF_PromisePlanMgt;
+        LineMgt: Codeunit "Planning Line Management";
+        ContextId: Guid;
+    begin
+        CreateFixture(SalesLine, Choice);
+        Item.Get(SalesLine."No.");
+        Item."Replenishment System" := Item."Replenishment System"::"Prod. Order";
+        Item.Modify(false);
+        Mgt.Load(SalesLine, Config);
+        GetWood(SalesLine, Config);
+        Config.Validate("Choice Code", Choice.Code);
+        Config.Validate("Quantity per Unit", 2);
+        Config.Modify(false);
+        DraftMgt.GetPreview(SalesLine, Config, Rows);
+        ContextId := CreateGuid();
+        PlanMgt.StoreContext(ContextId, SalesLine, Rows);
+        Rows.Reset();
+        Rows.SetRange(Indentation, 0);
+        Rows.FindFirst();
+        ReqLine."Line No." := 10000;
+        ReqLine.Type := ReqLine.Type::Item;
+        ReqLine.Validate("No.", Item."No.");
+        ReqLine.Validate("Unit of Measure Code", Choice."Unit of Measure Code");
+        ReqLine."Action Message" := ReqLine."Action Message"::New;
+        ReqLine.Validate(Quantity, 3);
+        ReqLine."Starting Date" := WorkDate();
+        ReqLine."Ending Date" := WorkDate();
+        ReqLine."Due Date" := WorkDate();
+        ReqLine.CF_PromiseContextId := ContextId;
+        ReqLine.CF_BOMNodeId := Rows."Node ID";
+        ReqLine.Insert(false);
+
+        LineMgt.Calculate(ReqLine, 0, false, true, 0);
+        Component.SetRange("Worksheet Template Name", ReqLine."Worksheet Template Name");
+        Component.SetRange("Worksheet Batch Name", ReqLine."Journal Batch Name");
+        Component.SetRange("Worksheet Line No.", ReqLine."Line No.");
+        AssertTrue(Component.Count() = 1, 'Planning must generate the selected component even with no base BOM.');
+        Component.FindFirst();
+        AssertTrue(Component."Item No." = Choice."Item No.", 'Planning must not fall back to the item master BOM.');
+        AssertTrue(Component."Expected Quantity" = 6, 'Two components per finished unit and three finished units must require six components.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure MaterialShortageUsesUnappliedQuantityAndSelectsAll()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Rows: Record CF_BOMBuffer temporary;
+        Lines: Record CF_MaterialSupplyLine temporary;
+        SupplyMgt: Codeunit CF_MaterialSupplyMgt;
+    begin
+        CreateMaterialFixture(SalesLine, Choice, Rows);
+        SupplyMgt.Calculate(SalesLine, Rows, CF_MaterialReceiptPolicy::OnTime, Lines);
+        Lines.SetRange("Item No.", Choice."Item No.");
+        Lines.FindFirst();
+        AssertTrue(Lines."Required Quantity" = 6, 'Three outputs at two components per unit must require six base units.');
+        AssertTrue(Lines."Shortage Quantity" = 6, 'Without inventory or receipts, all six units must be shortages.');
+        AssertTrue(Lines.Selected, 'Every shortage must be selected by default.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure MaterialReceiptPolicyControlsLatePurchaseCoverage()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Rows: Record CF_BOMBuffer temporary;
+        Lines: Record CF_MaterialSupplyLine temporary;
+        PurchaseLine: Record "Purchase Line";
+        SupplyMgt: Codeunit CF_MaterialSupplyMgt;
+    begin
+        CreateMaterialFixture(SalesLine, Choice, Rows);
+        Rows.SetRange("No.", Choice."Item No.");
+        Rows.FindFirst();
+        PurchaseLine."Document Type" := PurchaseLine."Document Type"::Order;
+        PurchaseLine."Document No." := NewCode('PO');
+        PurchaseLine."Line No." := 10000;
+        PurchaseLine.Type := PurchaseLine.Type::Item;
+        PurchaseLine."No." := Choice."Item No.";
+        PurchaseLine."Location Code" := Rows."Location Code";
+        PurchaseLine."Outstanding Qty. (Base)" := 5;
+        PurchaseLine."Expected Receipt Date" := WorkDate() + 10;
+        PurchaseLine.Insert(false);
+
+        SupplyMgt.Calculate(SalesLine, Rows, CF_MaterialReceiptPolicy::OnTime, Lines);
+        Lines.SetRange("Item No.", Choice."Item No.");
+        Lines.FindFirst();
+        AssertTrue(Lines."Shortage Quantity" = 6, 'Late receipts must not cover on-time demand.');
+        SupplyMgt.Calculate(SalesLine, Rows, CF_MaterialReceiptPolicy::AllReceipts, Lines);
+        Lines.SetRange("Item No.", Choice."Item No.");
+        Lines.FindFirst();
+        AssertTrue(Lines."Shortage Quantity" = 1, 'Five late purchase units must cover five of the six units under All Receipts.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure MaterialSupplyDoesNotPurchaseTheConfiguredFinishedItem()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Rows: Record CF_BOMBuffer temporary;
+        Lines: Record CF_MaterialSupplyLine temporary;
+        Item: Record Item;
+        SupplyMgt: Codeunit CF_MaterialSupplyMgt;
+    begin
+        CreateMaterialFixture(SalesLine, Choice, Rows);
+        Item.Get(SalesLine."No.");
+        Item."Replenishment System" := Item."Replenishment System"::Purchase;
+        Item.Modify(false);
+        SupplyMgt.Calculate(SalesLine, Rows, CF_MaterialReceiptPolicy::OnTime, Lines);
+        Lines.SetRange("Item No.", SalesLine."No.");
+        Lines.FindFirst();
+        AssertTrue(Lines."Replenishment System" = Lines."Replenishment System"::"Prod. Order", 'The finished root is the configured production output, not a material purchase.');
+        Lines.SetRange("Item No.", Choice."Item No.");
+        Lines.FindFirst();
+        AssertTrue(Lines."Shortage Quantity" = 6, 'Material planning must still explode the configured output when its default supply method is Purchase.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure MaterialDemandNetsFinishedItemStockFirst()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Rows: Record CF_BOMBuffer temporary;
+        Lines: Record CF_MaterialSupplyLine temporary;
+        SupplyMgt: Codeunit CF_MaterialSupplyMgt;
+    begin
+        CreateMaterialFixture(SalesLine, Choice, Rows);
+        AddMaterialStock(SalesLine."No.", SalesLine."Location Code", 2);
+        SupplyMgt.Calculate(SalesLine, Rows, CF_MaterialReceiptPolicy::OnTime, Lines);
+        Lines.SetRange("Item No.", Choice."Item No.");
+        Lines.FindFirst();
+        AssertTrue(Lines."Required Quantity" = 2, 'Two finished units in stock must leave only one output requiring two raw-material units.');
+        AssertTrue(Lines."Shortage Quantity" = 2, 'Procurement must cover net new production rather than the full sales quantity.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure MaterialSupplyUsesTransferSKUDefaults()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Rows: Record CF_BOMBuffer temporary;
+        Lines: Record CF_MaterialSupplyLine temporary;
+        Item: Record Item;
+        SKU: Record "Stockkeeping Unit";
+        Location: Record Location;
+        SupplyMgt: Codeunit CF_MaterialSupplyMgt;
+    begin
+        CreateMaterialFixture(SalesLine, Choice, Rows);
+        Rows.SetRange("No.", Choice."Item No.");
+        Rows.FindFirst();
+        Location.Code := CopyStr(NewCode('FROM'), 1, MaxStrLen(Location.Code));
+        Location.Insert(false);
+        Item.Get(Choice."Item No.");
+        SKU.CopyFromItem(Item);
+        SKU."Item No." := Item."No.";
+        SKU."Location Code" := Rows."Location Code";
+        SKU."Replenishment System" := SKU."Replenishment System"::Transfer;
+        SKU."Transfer-from Code" := Location.Code;
+        SKU.Insert(false);
+
+        SupplyMgt.Calculate(SalesLine, Rows, CF_MaterialReceiptPolicy::OnTime, Lines);
+        Lines.SetRange("Item No.", Choice."Item No.");
+        Lines.FindFirst();
+        AssertTrue(Lines."Replenishment System" = Lines."Replenishment System"::Transfer, 'The effective SKU must override Item purchase replenishment.');
+        AssertTrue(Lines."Transfer-from Code" = Location.Code, 'The review must default the SKU transfer source.');
+        AssertTrue(Lines."Shortage Quantity" = 6, 'Changing supply method must not change the required base quantity.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure MaterialOccurrencesCannotReuseTheSameStock()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Rows: Record CF_BOMBuffer temporary;
+        Lines: Record CF_MaterialSupplyLine temporary;
+        SupplyMgt: Codeunit CF_MaterialSupplyMgt;
+    begin
+        CreateMaterialFixture(SalesLine, Choice, Rows);
+        Rows.SetRange("No.", Choice."Item No.");
+        Rows.FindFirst();
+        AddMaterialStock(Choice."Item No.", Rows."Location Code", 7);
+        Rows."Node ID" := CreateGuid();
+        Rows."Sort Order" += 100000;
+        Rows.Insert(false);
+
+        SupplyMgt.Calculate(SalesLine, Rows, CF_MaterialReceiptPolicy::OnTime, Lines);
+        Lines.SetRange("Item No.", Choice."Item No.");
+        AssertTrue(Lines.Count() = 2, 'Repeated item occurrences must retain their own identities.');
+        Lines.CalcSums("Required Quantity", "Covered Quantity", "Shortage Quantity");
+        AssertTrue(Lines."Required Quantity" = 12, 'Two occurrences must require twelve base units.');
+        AssertTrue(Lines."Covered Quantity" = 7, 'Seven existing units must be allocated only once.');
+        AssertTrue(Lines."Shortage Quantity" = 5, 'The total purchase shortage must be exactly five.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure MaterialDemandDoesNotTreatReservedProposalAsActualSupply()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Rows: Record CF_BOMBuffer temporary;
+        Lines: Record CF_MaterialSupplyLine temporary;
+        Reservation: Record "Reservation Entry";
+        SupplyMgt: Codeunit CF_MaterialSupplyMgt;
+        EntryNo: Integer;
+    begin
+        CreateMaterialFixture(SalesLine, Choice, Rows);
+        if Reservation.FindLast() then
+            EntryNo := Reservation."Entry No.";
+        Reservation.Init();
+        Reservation."Entry No." := EntryNo + 1;
+        Reservation.Positive := false;
+        Reservation."Reservation Status" := Reservation."Reservation Status"::Reservation;
+        Reservation."Item No." := SalesLine."No.";
+        Reservation."Location Code" := SalesLine."Location Code";
+        Reservation."Source Type" := Database::"Sales Line";
+        Reservation."Source Subtype" := SalesLine."Document Type".AsInteger();
+        Reservation."Source ID" := SalesLine."Document No.";
+        Reservation."Source Ref. No." := SalesLine."Line No.";
+        Reservation."Shipment Date" := WorkDate();
+        Reservation."Expected Receipt Date" := WorkDate();
+        Reservation.Quantity := -3;
+        Reservation."Quantity (Base)" := -3;
+        Reservation."Qty. per Unit of Measure" := 1;
+        Reservation.Insert(false);
+        Reservation.Positive := true;
+        Reservation."Source Type" := Database::"Requisition Line";
+        Reservation."Source Subtype" := 0;
+        Reservation."Source ID" := '';
+        Reservation."Source Ref. No." := 10000;
+        Reservation.Quantity := 3;
+        Reservation."Quantity (Base)" := 3;
+        Reservation.Insert(false);
+
+        SupplyMgt.Calculate(SalesLine, Rows, CF_MaterialReceiptPolicy::OnTime, Lines);
+        Lines.SetRange("Item No.", Choice."Item No.");
+        Lines.FindFirst();
+        AssertTrue(Lines."Required Quantity" = 6, 'A reservation to an unconverted requisition proposal must not suppress production/material demand.');
+        AssertTrue(Lines."Shortage Quantity" = 6, 'A proposal reservation is not inventory or an actual purchase/transfer order.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure MaterialReviewRequiresSelectionAndVendor()
+    var
+        Lines: Record CF_MaterialSupplyLine temporary;
+        SupplyMgt: Codeunit CF_MaterialSupplyMgt;
+    begin
+        Lines."Node ID" := CreateGuid();
+        Lines."Shortage Quantity" := 1;
+        Lines."Required Date" := WorkDate();
+        Lines.Selected := false;
+        Lines.Insert();
+        asserterror SupplyMgt.CheckSelected(Lines);
+        AssertErrorContains('Select at least one material shortage');
+        Lines.Selected := true;
+        Lines.Modify();
+        asserterror SupplyMgt.CheckSelected(Lines);
+        AssertErrorContains('Vendor No.');
+    end;
+
+    [Test]
+    [TransactionModel(TransactionModel::AutoRollback)]
+    procedure MaterialDemandNetsSubassemblyStockBeforeLeafMaterials()
+    var
+        SalesLine: Record "Sales Line";
+        Choice: Record CF_OptionChoiceLookup;
+        Rows: Record CF_BOMBuffer temporary;
+        Lines: Record CF_MaterialSupplyLine temporary;
+        Subassembly: Record Item;
+        Material: Record Item;
+        SupplyMgt: Codeunit CF_MaterialSupplyMgt;
+        ParentId: Guid;
+    begin
+        CreateMaterialFixture(SalesLine, Choice, Rows);
+        Rows.SetRange("No.", Choice."Item No.");
+        Rows.FindFirst();
+        ParentId := Rows."Node ID";
+        Subassembly.Get(Choice."Item No.");
+        Subassembly."Replenishment System" := Subassembly."Replenishment System"::"Prod. Order";
+        Evaluate(Subassembly."Safety Lead Time", '<0D>');
+        Subassembly.Modify(false);
+        AddMaterialStock(Subassembly."No.", Rows."Location Code", 4);
+        CreateItem(Material, '', Choice."Unit of Measure Code");
+        Rows."Node ID" := CreateGuid();
+        Rows."Parent Node ID" := ParentId;
+        Rows."No." := Material."No.";
+        Rows."Quantity per" := 3;
+        Rows.Indentation += 1;
+        Rows."Sort Order" += 100000;
+        Rows."Choice Root" := false;
+        Rows.Insert(false);
+
+        SupplyMgt.Calculate(SalesLine, Rows, CF_MaterialReceiptPolicy::OnTime, Lines);
+        Lines.SetRange("Item No.", Subassembly."No.");
+        Lines.FindFirst();
+        AssertTrue(Lines."Required Quantity" = 6, 'The output requires six subassemblies.');
+        AssertTrue(Lines."Shortage Quantity" = 2, 'Four stocked subassemblies must reduce new subassembly production to two.');
+        Lines.SetRange("Item No.", Material."No.");
+        Lines.FindFirst();
+        AssertTrue(Lines."Required Quantity" = 6, 'Two new subassemblies at three components each must require six raw units, not eighteen.');
+        AssertTrue(Lines."Shortage Quantity" = 6, 'Only the net manufactured subassembly demand may be purchased.');
+    end;
+
+    local procedure CreateMaterialFixture(var SalesLine: Record "Sales Line"; var Choice: Record CF_OptionChoiceLookup; var Rows: Record CF_BOMBuffer temporary)
+    var
+        Item: Record Item;
+        Config: Record CF_DocumentLineProductConfig temporary;
+        DraftMgt: Codeunit CF_BOMDraftMgt;
+    begin
+        CreateFixture(SalesLine, Choice);
+        Item.Get(SalesLine."No.");
+        Item."Replenishment System" := Item."Replenishment System"::"Prod. Order";
+        Evaluate(Item."Safety Lead Time", '<0D>');
+        Item.Modify(false);
+        SalesLine.Quantity := 3;
+        SalesLine."Quantity (Base)" := 3;
+        SalesLine."Outstanding Quantity" := 3;
+        SalesLine."Outstanding Qty. (Base)" := 3;
+        SalesLine."Qty. per Unit of Measure" := 1;
+        SalesLine."Shipment Date" := WorkDate();
+        SalesLine.Modify(false);
+        Mgt.Load(SalesLine, Config);
+        GetWood(SalesLine, Config);
+        Config.Validate("Choice Code", Choice.Code);
+        Config.Validate("Quantity per Unit", 2);
+        Config.Modify(false);
+        DraftMgt.GetPreview(SalesLine, Config, Rows);
+    end;
+
+    local procedure AddMaterialStock(ItemNo: Code[20]; LocationCode: Code[10]; Quantity: Decimal)
+    var
+        Entry: Record "Item Ledger Entry";
+        EntryNo: Integer;
+    begin
+        if Entry.FindLast() then
+            EntryNo := Entry."Entry No.";
+        Entry.Init();
+        Entry."Entry No." := EntryNo + 1;
+        Entry."Item No." := ItemNo;
+        Entry."Location Code" := LocationCode;
+        Entry."Posting Date" := WorkDate();
+        Entry."Entry Type" := Entry."Entry Type"::"Positive Adjmt.";
+        Entry.Quantity := Quantity;
+        Entry."Remaining Quantity" := Quantity;
+        Entry.Positive := true;
+        Entry.Open := true;
+        Entry.Insert(false);
+    end;
+
+    local procedure SetMandatoryValues(Choice: Record CF_OptionChoiceLookup; MandatoryValues: Enum CF_MandatoryValues)
+    var
+        OptionSetup: Record CF_ConfiguratorBOM;
+    begin
+        OptionSetup.Get(Choice."Item Category Code", Choice."Configuration Option");
+        OptionSetup.Validate("Mandatory Values", MandatoryValues);
+        OptionSetup.Modify(true);
     end;
 
     local procedure CreateFixture(var SalesLine: Record "Sales Line"; var Choice: Record CF_OptionChoiceLookup)
@@ -1537,6 +2037,7 @@ codeunit 91003 CF_DocumentConfigTests
         OptionSetup."Configuration Option" := 'WOOD';
         OptionSetup."Option Description" := 'Wood finish';
         OptionSetup."Quantity per Unit" := 1;
+        OptionSetup."Mandatory Values" := CF_MandatoryValues::None;
         OptionSetup.Enabled := true;
         OptionSetup.Insert(true);
         Choice."Item Category Code" := Category.Code;
@@ -1544,7 +2045,6 @@ codeunit 91003 CF_DocumentConfigTests
         Choice.Code := 'BLUE';
         Choice.Validate("Item No.", ComponentItem."No.");
         Choice.Selectable := true;
-        Choice."Mandatory Values" := CF_MandatoryValues::None;
         Choice.Insert(true);
     end;
 

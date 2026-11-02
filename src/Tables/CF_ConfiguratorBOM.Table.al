@@ -14,8 +14,8 @@ table 91000 CF_ConfiguratorBOM
     {
         field(1; "Item Category Code"; Code[20])
         {
-            Caption = 'Item Category Code';
-            TableRelation = "Item Category";
+            Caption = 'Template Code';
+            TableRelation = CF_ConfigTemplate;
             NotBlank = true;
         }
         field(2; "Configuration Option"; Code[10])
@@ -29,7 +29,8 @@ table 91000 CF_ConfiguratorBOM
         }
         field(4; "Quantity per Unit"; Decimal)
         {
-            Caption = 'Quantity per Finished Base Unit';
+            Caption = 'Quantity per Unit (Legacy)';
+            Editable = false;
             InitValue = 1;
             DecimalPlaces = 0 : 5;
             trigger OnValidate()
@@ -66,6 +67,11 @@ table 91000 CF_ConfiguratorBOM
                 CheckDefaultChoice();
             end;
         }
+        field(10; "Mandatory Values"; Enum CF_MandatoryValues)
+        {
+            Caption = 'Mandatory Values';
+            InitValue = ChoiceCode;
+        }
     }
     keys
     {
@@ -89,7 +95,7 @@ table 91000 CF_ConfiguratorBOM
         Choice.SetRange("Item Category Code", "Item Category Code");
         Choice.SetRange("Configuration Option", "Configuration Option");
         if not Choice.IsEmpty() then
-            Error('Delete the choices for category %1, option %2 before deleting the option.', "Item Category Code", "Configuration Option");
+            Error('Delete the choices for template %1, option %2 before deleting the option.', "Item Category Code", "Configuration Option");
     end;
 
     trigger OnRename()
@@ -98,25 +104,23 @@ table 91000 CF_ConfiguratorBOM
     end;
 
     procedure RequiresChoice(): Boolean
-    var
-        Choice: Record CF_OptionChoiceLookup;
     begin
-        Choice.SetRange("Item Category Code", "Item Category Code");
-        Choice.SetRange("Configuration Option", "Configuration Option");
-        Choice.SetRange(Selectable, true);
-        Choice.SetFilter("Mandatory Values", '<>%1', CF_MandatoryValues::None);
-        exit(not Choice.IsEmpty());
+        exit("Mandatory Values" <> CF_MandatoryValues::None);
+    end;
+
+    procedure RequiresQuantity(): Boolean
+    begin
+        exit("Mandatory Values" = CF_MandatoryValues::ChoiceCodeAndQuantity);
     end;
 
     local procedure CheckSetup()
     var
-        Category: Record "Item Category";
+        TemplateMgt: Codeunit CF_TemplateMgt;
         RoutingLink: Record "Routing Link";
     begin
         TestField("Item Category Code");
         TestField("Configuration Option");
-        Category.Get("Item Category Code");
-        Validate("Quantity per Unit");
+        TemplateMgt.EnsureLegacyHeader("Item Category Code");
         if "Routing Link Code" <> '' then
             RoutingLink.Get("Routing Link Code");
         CheckDefaultChoice();
@@ -125,13 +129,12 @@ table 91000 CF_ConfiguratorBOM
     local procedure CheckDefaultChoice()
     var
         Choice: Record CF_OptionChoiceLookup;
-        Mgt: Codeunit CF_DocumentConfigMgt;
     begin
         if "Default Choice Code" = '' then
             exit;
         if not Choice.Get("Item Category Code", "Configuration Option", "Default Choice Code") then
-            Error('Default choice %1 does not exist for category %2, option %3.', "Default Choice Code", "Item Category Code", "Configuration Option");
+            Error('Default choice %1 does not exist for template %2, option %3.', "Default Choice Code", "Item Category Code", "Configuration Option");
         Choice.TestField(Selectable, true);
-        Mgt.ValidateItem(Choice."Item No.", Choice."Variant Code", Choice."Unit of Measure Code");
+        Choice.CheckMapping();
     end;
 }

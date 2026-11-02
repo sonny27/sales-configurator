@@ -90,7 +90,7 @@ pageextension 91000 CF_SalesOrderSubform extends "Sales Order Subform"
                     ApplicationArea = Manufacturing;
                     Image = BOM;
                     Ellipsis = true;
-                    ToolTip = 'Preview the effective parent item/SKU BOM plus saved configuration components without changing any master BOM.';
+                    ToolTip = 'Open a private editable component draft with multilevel items and read-only routing operations. Apply saves it against this sales configuration without changing master BOMs or routings.';
                     trigger OnAction()
                     var
                         Mgt: Codeunit CF_DocumentConfigMgt;

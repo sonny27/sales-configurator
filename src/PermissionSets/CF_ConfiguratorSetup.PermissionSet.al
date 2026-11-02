@@ -11,6 +11,7 @@ permissionset 91001 CF_ConfiguratorSetup
         tabledata CF_ConfiguratorBOM = RIMD,
         tabledata CF_OptionChoiceLookup = RIMD,
         tabledata CF_SalesConfiguratorSetup = RIM,
+        tabledata CF_ConfigTemplate = RIMD,
         tabledata "Item Category" = R,
         table "Item Category" = X,
         page CF_CategoryTemplateDesigner = X,

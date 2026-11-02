@@ -8,11 +8,13 @@ Design a standalone **Product Configurator** popup for a sales order item line. 
 
 The initial standalone AL implementation is now present in this project. This document records its design, delivered scope, and validation. It complements [Base App Sales Order to Production Order Flow](<Base App Sales Order to Production Order Flow.md>).
 
-**Current version 1.0.0.10:** configuration numbers use the originating **Document No.-Line No.**, stored in **Code[100]** fields. Sales Quote configuration and standard Make Order transfer are supported; conversion retains the quote's original configuration number. Section 19 supersedes the historical number-series design in section 18. The sales-order split button includes View Production Order; Sales Configurator Setup supplies the default production creation status (section 20) and enables the sales-line configurator menu and configuration number column (section 21). Show New Configured BOM opens the New Configured BOM preview without changing the master BOM (section 22).
+**Current version 1.0.0.38:** Fixes the document-type client-expression error when opening Product Configurator (section 39).
+
+**Create Material Supply** reviews default-selected net material shortages and creates purchase/transfer orders using SKU/Item settings and a setup-controlled receipt policy (section 38). Product Configurator has a native-style **Availability** split button with standard item views, configured BOM-level availability and selected-sales-line Order Promising for current edits; late/unfulfilled ATP/CTP results use red row styling (section 37). Component items allow Inventory and Non-Inventory, matching native production BOM/component rules; Service remains unsupported and the finished root remains Inventory-only (section 36). Only directly added choice/manual rows use Favorable (green) styling; inherited BOM descendants retain normal styling (section 35 supersedes section 33's whole-branch highlighting). Diagram boxes support temporary whole-branch dragging and native card drill-down (section 34). Diagram up/down buttons collapse or expand one hierarchy level at a time (section 32). The diagram mounts inside the Business Central control-add-in container rather than below it (section 31). BOM draft generation prevents Work/Machine Center numbers from being looked up as items (section 30). **New Configured BOM** includes a read-only **Diagram** of the current draft with components/operations views, zoom and pan (section 29). Product Configurator shows matching **Routing Operation** numbers and descriptions beside each Routing Link Code (section 28). Editable **Base Routing** and **Base BOM** default using native item/SKU precedence and drive the configured structure and production (section 27). Setup selects **Item No.** or **Item Category** template assignment; persistent template headers and **Copy Template** are described in section 26, which supersedes the category-only design in section 13. Configuration numbers use the originating **Document No.-Line No.**, stored in **Code[100]** fields. Sales Quote configuration and standard Make Order transfer are supported; conversion retains the quote's original configuration number and template binding. Section 19 supersedes the historical number-series design in section 18. Sales Configurator Setup controls the production status and sales-line UI (sections 20-21). **New Configured BOM** uses private editable component drafts, native item/routing subtrees, and read-only Work/Machine Centre rows; committed component structures are used in production (section 25 supersedes the historical read-only preview in section 22). Choices support Item or Production BOM using native multilevel production (section 23). Mandatory Values is configured once per option, and Default Quantity is configured per choice and can be overridden in Product Configurator (section 17). Zero template defaults require users to enter a final quantity. Per-choice minimum/maximum quantity checking is described in section 24.
 
 ### Confirmed decisions
 
-- Two shared template setup tables, persistent document-line selections in `CF_DocumentLineProductConfig`, one numbered header per configured document line, and Sales Configurator Setup showing the document/line numbering policy.
+- Persistent template headers with two child setup tables, persistent document-line selections in `CF_DocumentLineProductConfig`, one numbered header per configured document line, and Sales Configurator Setup showing assignment and numbering policies.
 - Include Document Type and source document/line identity so storage can support other documents. Sales Order was the initial integration; version 1.0.0.4 also supports Sales Quotes and their standard Make Order conversion.
 - First version supports **Item Order only**. Block Project Order creation for a sales order containing configured lines.
 - Quantity per unit means quantity per **finished item's base unit**.
@@ -21,7 +23,7 @@ The initial standalone AL implementation is now present in this project. This do
 - Block configuration edits once a linked production order exists.
 - Use standalone `CF_` objects, with no runtime integration with the third-party configurator.
 - All new AL object names use `CF_PascalCase`, contain no vendor prefix, and are at most 30 characters.
-- One shared default template per actual parent item category; no item-specific or sales-line category override.
+- Setup selects one template per sales-line item or per actual parent item category. Saved configurations retain their original assignment; no silent fallback or sales-line category override.
 - Optional default choices are preselected for a first configuration and saved only when the user chooses Apply.
 
 ## 2. Two-level relationship and example
@@ -33,13 +35,14 @@ Sales order line: parent item DESK-BASE, category DESK
     |       Category = DESK
     |       Option = WOOD
     |       Description = Wood finish
-    |       Default quantity per base unit = 1
+    |       Mandatory Values = Choice Code
     |
     +-- Level 2: CF_OptionChoiceLookup
             Category = DESK
             Option = WOOD
             Choice code = BLUE
             Item No. = BLUE
+            Quantity per finished base unit = 1
             Selectable = Yes
                     |
                     +-- CF_DocumentLineProductConfig saves the selection
@@ -116,9 +119,10 @@ Permanent shared setup, one row per category and configuration option.
 | Item Category Code | Code[20] | Relation to Item Category |
 | Configuration Option | Code[10] | Stable option identifier, e.g. WOOD |
 | Option Description | Text[250] | User-facing description |
-| Quantity per Unit | Decimal | Default component quantity per finished base unit |
+| Quantity per Unit (Legacy) | Decimal | Retained only to migrate existing defaults to choices |
 | Display Order | Integer | Presentation order |
-| Mandatory (Legacy) | Boolean | Original flag retained for upgrade; runtime requiredness now derives from selectable child choices |
+| Mandatory (Legacy) | Boolean | Original flag retained for historical upgrades |
+| Mandatory Values | Enum CF_MandatoryValues | Requirement shared by every choice under this option; new options default to Choice Code |
 | Enabled | Boolean | Enable the option for new configurations |
 | Default Choice Code | Code[20] | Optional selectable choice within the same category/option, preselected on first configuration |
 | Routing Link Code | Code[10] | Optional link to an existing parent routing operation |
@@ -136,13 +140,17 @@ Permanent choice mappings. First version supports item components only, so a cus
 | Item Category Code | Code[20] | Parent category |
 | Configuration Option | Code[10] | Parent option |
 | Code | Code[20] | Choice identifier, e.g. BLUE |
-| Item No. | Code[20] | Required relation to an existing inventory item |
+| Item No. | Code[20] | Required relation to an existing Inventory or Non-Inventory component item |
 | Description | Text[250] | Choice display text |
 | Variant Code | Code[10] | Optional variant of the component item |
 | Unit of Measure Code | Code[10] | Valid component item UOM; default from the item |
 | Display Order | Integer | Choice order |
 | Selectable | Boolean | Whether this choice can be selected |
-| Mandatory Values | Enum CF_MandatoryValues | Choice-level requirement; new choices default to Choice Code |
+| Mandatory Values (Legacy) | Enum CF_MandatoryValues | Previous child-level rule retained only for migration |
+| Default Quantity (stored as Quantity per Unit) | Decimal | Default component quantity in the selected UOM per finished base unit; nonnegative, defaults to 1; zero requires user entry before Apply |
+| Min. Max. Quantity Behavior | Enum CF_MinMaxQtyBehavior | Disabled, both limits, minimum only, or maximum only |
+| Minimum Quantity | Decimal | Inclusive minimum per finished base unit when enabled |
+| Maximum Quantity | Decimal | Inclusive maximum per finished base unit when enabled |
 
 Primary key: `(Item Category Code, Configuration Option, Code)`. Display order is not part of identity. Validate the category/option against level 1 and variant/UOM against the mapped item. Reuse the standard item's inventory calculation for optional lookup availability, with explicit location/variant filters.
 
@@ -197,7 +205,7 @@ Use setup pages to maintain the two levels; setup pages are not the sales-line s
 
 Version 1 allows one selected choice per option, with a positive editable quantity. Mandatory options cannot be left blank. Optional unselected options generate no component. Pricing, image sets, rule engines, sub-configuration trees, and resource choices are outside this version.
 
-In Product Configurator, only the first column, **Configuration Option**, uses **Unfavorable (red)** for an enabled mandatory option while Choice Code is blank and **Favorable (green)** once populated. For a selected **Choice Code and Quantity** choice, quantity must also be positive to show green. All other columns retain normal styling. Preselected mandatory defaults with positive quantity are green immediately; clearing the choice restores red. Optional, disabled, or removed options retain standard styling. Requiredness is derived from selectable child choices as described in section 17 and recalculated on each row refresh, including after typed/lookup selections and returning from template setup. Green indicates mandatory completeness only: existing mapping, quantity, and routing validations still apply, and permanent storage still requires **Apply Configuration**.
+In Product Configurator, only the first column, **Configuration Option**, uses **Unfavorable (red)** for an enabled mandatory option while Choice Code is blank or the selected quantity is zero, and **Favorable (green)** once a choice and positive quantity are populated. All other columns retain normal styling. Preselected mandatory defaults with positive quantity are green immediately; zero template defaults remain red until completed. Clearing the choice restores red. Optional, disabled, or removed options retain standard styling. Requiredness is read from the option as described in section 17 and recalculated on each row refresh, including after typed/lookup selections and returning from template setup. Green indicates mandatory completeness only: existing mapping, quantity, and routing validations still apply, and permanent storage still requires **Apply Configuration**.
 
 ## 5. Production-order snapshot and traceability
 
@@ -279,7 +287,7 @@ The base AddItem helper inserts immediately; do not rely on it unchanged where i
 
 ## 8. Safeguards and boundaries
 
-- Reject nonexistent, non-inventory, blocked, or consumption-blocked mapped items/variants. Validate component UOM and routing links both when applying the popup and creating production.
+- Reject nonexistent, Service/unsupported-type, blocked, or consumption-blocked mapped items/variants. Inventory and Non-Inventory components are supported. Validate component UOM and routing links both when applying the popup and creating production.
 - Zero inventory may be displayed as a warning; it is not itself a reason to reject an otherwise valid component.
 - Block configuration changes through pages and table/service validation while any linked production order exists. Guard parent item/category/variant changes that would make saved selections stale.
 - Document copy must not leave selections referencing the original Source Line SystemId or document identity. Version 1 does not automatically copy configurations; the destination sales order line must be configured explicitly.
@@ -366,6 +374,8 @@ Tenant-specific routing links, directed warehouse/bin behavior, and operational 
 
 ## 13. Category default templates
 
+Historical design through version 1.0.0.18. Section 26 supersedes the category-only assignment and temporary-header design below.
+
 Each standard item category has one shared template represented by its existing `CF_ConfiguratorBOM` option rows and `CF_OptionChoiceLookup` mappings. There is no additional persistent template-header table. The designer uses a temporary copy of the selected standard Item Category as its header, so switching categories neither edits category master data nor changes any parent item's category.
 
 ```mermaid
@@ -387,7 +397,7 @@ flowchart LR
 
 - Select a category in the designer header; highlight an option to filter the lower choices grid by both category and option.
 - **Save Option** saves the option before adding its choices; **Save Choice** saves a mapping before using it as a default.
-- A default must be selectable and resolve to a valid inventory item/variant/UOM within the same category and option.
+- A default must be selectable and resolve to a valid Inventory or Non-Inventory item/variant/UOM within the same category and option.
 - Clear or change an option's default before deleting or disabling that choice.
 - `CF_ConfiguratorSetup` grants template-table maintenance, designer-page execution, and read access to Item Category. It does not grant category-master write access. Normal item/sales/manufacturing permissions are still required.
 - The sales popup's **BOM Template Setup** action requires setup write permissions and a nonblank actual parent-item category. Direct designer opening also checks both setup tables' write permissions.
@@ -515,40 +525,39 @@ Manual acceptance:
 7. Check changed/blocked mappings, obsolete options, invalid quantities, and incompatible target routing reject loading without partial replacement.
 8. Confirm production-linked targets cannot load previous choices, and new mandatory template options remain red until populated.
 
-## 17. Choice-level Mandatory Values
+## 17. Option-level Mandatory Values and choice-level quantity
 
-**Mandatory Values** is configured on each row of the lower **Category Template Choices** grid, and in the standalone Configurator Choices list. It replaces the upper option grid's Mandatory checkbox:
+**Mandatory Values** is configured on the upper **Options** grid and in the standalone Configurator Options list. The rule applies to **all choices under that option**; choices cannot override it. The lower **Choices for Selected Option** grid and standalone choices list instead contain **Default Quantity**, after Description. This initializes the editable **Quantity per Finished Base Unit** in Product Configurator; users can change the selected quantity without changing the setup default.
 
 | Value | Behavior |
 |---|---|
-| None | This choice does not make the parent option required. |
-| Choice Code | Makes the parent option require one selected choice. This is the default for newly created choices. |
-| Choice Code and Quantity | Makes the parent option require one selected choice; when this particular choice is selected, quantity is also marked required. Any positive default quantity satisfies it; manual re-entry is not required. |
+| None | The option is optional. |
+| Choice Code | The option requires one selected choice. This is the default for new options. |
+| Choice Code and Quantity | The option requires one selected choice and a positive quantity, regardless of which choice is selected. A positive default satisfies the quantity requirement; manual re-entry is not required. |
 
-Requiredness is calculated live from the parent's **selectable** child choices. If any selectable child uses either mandatory mode, the parent needs **one** choice, not every mandatory child. Selecting any valid choice fulfills that parent selection requirement. If all selectable children use None, or there are no selectable children, the option is optional. Disabled options are excluded.
+Requiredness is read live from the option, not derived from child rows. Selecting any valid choice fulfills the option's choice requirement. A mandatory option remains mandatory even if no selectable choices are available, so maintain a valid selectable choice before using it. Disabled options are excluded.
 
-For example, WOOD can offer BLUE and GREEN. If either selectable choice uses Choice Code, WOOD cannot be applied blank, but the user selects BLUE **or** GREEN, not both. Setting every selectable WOOD choice to None makes WOOD optional. Adding a new selectable choice to an optional option defaults that new choice to Choice Code and therefore makes the option required unless its mode is changed to None.
+For example, WOOD can offer BLUE with quantity 1 and GREEN with quantity 2. Setting WOOD to Choice Code makes either choice satisfy the same requirement. Selecting BLUE initializes the sales configuration quantity to 1; selecting GREEN initializes it to 2. Sales users can still override the selected quantity. Explicitly selecting or reselecting a choice uses that choice's current default; reopening an existing configuration preserves its saved quantity. Adding another choice does not change WOOD's mandatory rule.
 
-The sales popup shows required-value indicators on Choice Code and, for a selected Choice Code and Quantity choice, Quantity. Color styling remains confined to the first Configuration Option column. Optional rows remain neutral. Apply and production creation enforce the same derived required-choice rule. Existing positive-quantity validation still applies to every selected component, even in None or Choice Code mode; None does not permit zero-quantity configured demand.
+The sales popup shows required-value indicators on Choice Code and, for Choice Code and Quantity options or selected zero-quantity defaults, Quantity. Color styling remains confined to the first Configuration Option column. Mandatory options with zero selected quantity remain red until a positive quantity is entered. Optional rows remain neutral. Apply and production creation enforce the same option-level rule. Every selected component must have a positive final quantity, including in None or Choice Code mode. Template defaults may be zero to force user entry.
 
 ### Upgrade and existing settings
 
-The app version increases to **1.0.0.1**. The new enum is **91001 CF_MandatoryValues**, and field 10 on **CF_OptionChoiceLookup** stores the value. The original Boolean field on **CF_ConfiguratorBOM** remains as **Mandatory (Legacy)** for migration, but no longer controls the runtime rule or appears in setup grids.
+Version **1.0.0.12** adds field 10 **Mandatory Values** on **CF_ConfiguratorBOM** and field 12 **Quantity per Unit** on **CF_OptionChoiceLookup**. The previous option quantity and child mandatory fields remain hidden, read-only legacy fields to preserve upgrade compatibility; neither controls current runtime behavior.
 
-Upgrade codeunit **91004 CF_ConfiguratorUpgrade** runs per company when upgrading data older than 1.0.0.1:
+Upgrade codeunit **91004 CF_ConfiguratorUpgrade** runs the relocation once per company when upgrading data older than 1.0.0.12:
 
-- Old parent Mandatory = Yes: its existing choices become Choice Code.
-- Old parent Mandatory = No: its existing choices become None.
-- Existing item/variant/UOM mappings, defaults, quantities, saved document selections, selection identities, and production snapshots are not rewritten.
-- Once the data version is 1.0.0.1 or newer, the migration is skipped, preserving subsequent user edits on later publishing/upgrades. Fresh-install choices use the new Choice Code default.
-
-Actual requiredness follows selectable choices, so a legacy option with no selectable choices is now optional under the agreed rule.
+- Each existing choice inherits its old parent option's quantity.
+- The option inherits the strictest previously selectable child rule: Choice Code and Quantity, then Choice Code, then None. Options without selectable children remain optional during migration. After migration, every child inherits the single parent rule.
+- Earlier upgrade steps still run first when upgrading older releases.
+- Existing item/variant/UOM mappings, default choice codes, saved document selections and their quantities, selection identities, and production snapshots are not rewritten.
+- Later upgrades skip this migration, preserving subsequent per-choice quantities and option rules.
 
 ### Verification
 
-No new automated test cases were created. Existing mandatory/style regression cases were updated to use the child field, with explicitly optional fixtures. **Seven existing tests passed**, covering required choice validation, defaults, None/Choice Code transitions, disabled options, independent row styling, and a Choice Code and Quantity default with positive quantity.
+Existing mandatory/style cases and the designer regression were updated for the relocated fields. No new automated tests were added and tests are not run for this change, as requested.
 
-Check the lower-grid dropdown/default and migrated values in the sandbox, including mixed child modes, clearing all selectable modes to None, and required-value indicators. Browser rendering and migration values on representative business setup still require manual acceptance.
+Manual acceptance: verify the mandatory dropdown appears only above, quantity appears only below, changing the parent rule affects every child, selecting choices with different quantities initializes the corresponding quantity, saved/previous configuration quantities remain preserved, and migrated setup retains its prior defaults.
 
 ## 18. Numbered document-line configuration headers
 
@@ -704,6 +713,8 @@ Manual acceptance: reopen an order and a quote with Enable disabled and confirm 
 
 ## 22. Show New Configured BOM
 
+Historical behavior through **1.0.0.17** is described below. **Section 25 supersedes this section for 1.0.0.18**, including editability, version dates, manufactured-item expansion, quantities, and saving.
+
 The opened page title is **New Configured BOM** as of **1.0.0.10**. The action caption remains **Show New Configured BOM**.
 
 Version **1.0.0.9** adds **Show New Configured BOM** to:
@@ -715,16 +726,22 @@ Version **1.0.0.9** adds **Show New Configured BOM** to:
 
 The supplied Base Application's **MfgItemCard** page extension implements **Production BOM** with `RunObject = Page "Production BOM"` and `RunPageLink = "No." = field("Production BOM No.")`. The stockkeeping-unit card instead calls **OpenProductionBOMForSKUItem**, allowing fallback to the item BOM. The standard **Production BOM Lines** subpage shows top-level setup rows, including nested Production BOM references, rather than exploding them into production-order components.
 
-The configurator uses the same top-level presentation in its own read-only worksheet because the combined result must be temporary: opening the standard editable master BOM card cannot safely display configuration additions without changing shared master data.
+The Base Application's **BOM Structure** page (5870) uses a temporary **BOM Buffer**, an indentation column, **ShowAsTree**, and quantities per parent. Its manufacturing tree code recursively follows nested BOMs. The configurator follows that tree presentation in its own read-only temporary worksheet, retaining Production BOM nodes and inserting their components immediately underneath. It cannot open the editable master BOM card to show unsaved configuration additions without changing shared master data.
+
+The preview builds the combined setup tree rather than invoking item-based availability/cost tree generation: its root includes temporary configured additions that are not in the master item BOM. Standard **VersionManagement** still resolves effective versions/UOMs; all levels consistently use the sales shipment date instead of the native tree's Work Date/availability scheduling context.
 
 ### Effective BOM and quantities
 
 - Resolve item/SKU BOM and routing with one shared helper, preserving standard blank-variant SKU initialization and exact-variant fallback behavior.
 - Read the current persisted sales line's location, variant, and **Shipment Date**. A shipment date is required.
 - Use standard **VersionManagement.GetBOMVersion** to select a certified version for that date; otherwise require the base BOM to be certified.
-- Include base BOM lines whose starting/ending dates cover the shipment date. Preserve native types, quantities, formulas, dimensions, scrap, routing links, and nested BOM references.
+- Include base BOM lines whose starting/ending dates cover the shipment date. Preserve native types, quantities, formulas, dimensions, scrap, routing links, and nested BOM nodes.
+- Recursively display components below every Production BOM node, including base references and configured additions. Item rows remain leaves even if the item has its own BOM; this tree follows explicit Production BOM references only.
+- Resolve each nested BOM's certified effective version and date-filter its lines at the same shipment date. Missing/uncertified BOMs, circular references along an active branch, or depth beyond 50 BOMs raise explicit errors. Reusing the same BOM on separate branches is allowed.
 - Append one **Configured Addition** row for each selected choice, with its option, choice, component, variant, component UOM, and routing link. Unselected choices are omitted. Identical components are not merged with base lines or other choices.
-- All rows use the displayed **Parent BOM Unit of Measure**. Configured quantity per is `Quantity per Finished Base Unit * Parent BOM UOM Qty. per Unit of Measure`; base quantities retain their original BOM-unit meaning. For example, a BOM BOX containing 10 finished base pieces and a configured quantity of 2 component units per piece displays 20 per BOX.
+- Root-level rows use the header's **Parent BOM Unit of Measure**. A configured root quantity is `Quantity per Finished Base Unit * Parent BOM UOM Qty. per Unit of Measure`; base quantities retain their original BOM-unit meaning. For example, a BOM BOX containing 10 finished base pieces and a configured quantity of 2 component units per piece displays 20 per BOX.
+- **Quantity per Parent** on a nested row is its original quantity per immediate containing BOM, not a cumulative quantity per root or sales demand. The row's **Parent BOM Unit of Measure** identifies that containing BOM's effective version UOM. Formulas/fixed quantities, scrap, and routing links remain source setup values; the preview does not calculate scheduled requirements.
+- Descendants of configured BOM additions inherit their **Configured Addition**, **Configuration Option**, and **Choice Code** origin markers. Other child fields retain their source BOM values.
 
 Missing BOMs, invalid conversions, invalid configured items/variants/UOMs, nonpositive configured quantities, and invalid selected routing links raise explicit errors. The preview does not require every mandatory choice to be filled and is not a replacement for Apply/production validation.
 
@@ -734,16 +751,369 @@ From the sales-line menu, only **saved** selections are added. Unapplied templat
 
 From the configurator window, the current temporary choices are included, including unsaved edits confirmed by the user. Previewing does not apply or save those edits. Cancel still discards them.
 
-The result is not the immutable linked-production snapshot, not an exploded component calculation, and not an exact scheduled-production requirement calculation. Actual production calculation can use different component dates, scrap, rounding, and nested BOM explosion. The master BOM, configuration records, sales line reference, and production orders are not modified by previewing.
+The tree is a setup structure, not the immutable linked-production snapshot or an exploded, flattened scheduled-production requirement calculation. Actual production calculation can use different component dates, scrap, rounding, and nested BOM explosion. The master BOM, configuration records, sales line reference, and production orders are not modified by previewing.
 
 ### Manual acceptance
+
+The preview's **No.** column supports drilldown for both base rows and configured additions: Item opens the standard **Item Card**; Production BOM opens the referenced **Production BOM** card. Navigation preserves the temporary preview and unsaved configurator selections. Standard card permissions apply; the preview itself remains read-only.
 
 1. Enable the configurator, reopen an order/quote, and preview a saved line. Confirm effective BOM/version, base rows, and selected additions.
 2. With no saved configuration, confirm only base rows appear.
 3. Change a choice/quantity in the configurator window; preview, then Cancel. Confirm the preview used the edit but saved configuration stayed unchanged.
 4. Verify the BOM-unit conversion example above, different component UOMs, and duplicate additions remaining separate.
 5. Check item BOM, blank/exact-variant SKU overrides, certified versions, and line date boundaries.
-6. Confirm nested BOMs remain references, all preview fields are read-only, and no master BOM/header is created or changed.
+6. Confirm every Production BOM row shows its components underneath with expand/collapse, including several nested levels and separate uses of the same BOM. Verify per-parent quantities/UOMs and inherited configured origin markers; circular, missing, or uncertified child BOMs must fail explicitly. All preview fields remain read-only, with no master BOM/header created or changed.
 7. Verify saved configurations linked to production can be previewed without changing snapshots or component markers.
 
 No new automated tests were created.
+
+## 23. Item and Production BOM choices: native multilevel production
+
+### Standard behavior
+
+In the supplied Base Application, **Calculate Prod. Order.TransferBOM** processes a line of type **Production BOM** by recursively calling TransferBOM. It explodes the nested BOM into the current order's components, not another production-order header. **Create Prod. Order Lines.CheckMakeOrderLine** can instead create a manufactured item's make-to-order supply as another line in the same production order, subject to item/SKU manufacturing policies.
+
+The configurator follows these native semantics. It does **not** create separate child production-order headers, force full-demand supply, or bypass standard reservations.
+
+### Choice setup and saved selections
+
+The lower **Choices for Selected Option** grid and the choices list offer **Type = Item / Production BOM**. Existing choices default to **Item**. The existing number field is displayed as **No.** and looks up Inventory or Non-Inventory items, or Production BOM headers.
+
+For **Item**, select an existing Inventory or Non-Inventory component item and its variant/UOM. To manufacture a subassembly as a child output line, select its Inventory **Item**, configure production replenishment and **Make-to-Order** on the relevant parent and child item/SKU, and maintain the child's production BOM/routing. Standard component location and reservation rules apply.
+
+For **Production BOM**, select an existing BOM header. No same-numbered item is required. Variant must be blank. UOM defaults from the header and must match the effective BOM version's UOM; arbitrary BOM UOM conversion is not inferred. Applying validates the certified version at the sales shipment date; production calculation validates the version/UOM again at the actual production starting date. A date/version UOM mismatch raises an error rather than silently changing quantities.
+
+Applying a choice captures type, number, variant, UOM, quantity, and routing-link mapping. Loading previous selections checks the type as well. Changing a setup type requires explicitly reselecting saved choices.
+
+Snapshot schema **2** records the type when a selected choice is a Production BOM. Item-only snapshots use schema **1**. Existing schema-1 snapshots remain readable and are not rewritten. Nested references in the master BOM continue through the standard engine without special snapshot handling.
+
+### Production calculation and lifecycle
+
+Codeunit **91008 CF_ConfigBOMMgt** is a scoped, manually bound native-calculation adapter. It initializes **Calculate Prod. Order** with the real parent production line and replaces only that line's root BOM transfer with the selected nested BOM. It does not create temporary master BOMs or implement its own formulas, scrap, rounding, date filters, or recursive explosion.
+
+Configured leaves are tagged with their selection identity and kept separate from base components and other selections. Native formulas and scrap remain enabled for exploded leaves. The selected routing link is used only when a leaf has no native routing link; existing BOM routing links take precedence.
+
+After adding configured components, the extension calls native **Create Prod. Order Lines.CheckStructure**. Eligible manufactured components can produce additional output lines and reservations **within the same production order**, including further levels under standard rules. A Production BOM reference by itself does not represent a separately manufactured output.
+
+Explosion runs only during authorized creation/component rebuild. Reapplying before flushing does not add the BOM again, including when a valid effective BOM has no component leaves. Existing safeguards still block rebuilding consumed, reserved, or picked configured components, editing linked sales configurations, and unsupported source changes. Native MTO reservations may therefore prevent refresh; this is not bypassed.
+
+### Preview
+
+**New Configured BOM** retains an added Production BOM choice as a root-level **Production BOM** node, clearly marked as a configured addition, and shows its effective components beneath it recursively. It remains a read-only setup tree, not a flattened production-requirements list. The same saved-versus-unsaved preview rules apply. Root quantities retain the parent BOM UOM conversion; nested quantities use each immediate containing BOM's unit.
+
+### Manual acceptance checks (not executed)
+
+- A Production BOM choice without a same-numbered item explodes into the root line's components without creating a separate header.
+- A manufactured Item choice with eligible parent/child MTO policies creates native same-order child lines and reservations; noneligible policies do not force production.
+- Check multiple levels, full parent quantity, non-base parent/item UOMs, component-location SKU overrides, certified versions, date boundaries, formulas, scrap, and native routing-link precedence.
+- Multiple choices using the same leaf item remain traceable separately from each other and the master BOM.
+- Repeated status/flushing operations do not duplicate exploded additions; component refresh rebuilds them only when existing consumption/reservation/pick guards permit.
+- Uncertified/missing BOMs, invalid UOMs, date-dependent UOM mismatches, and circular structures fail explicitly under native validation.
+- Existing Item-only snapshots, quote-to-order transfer, preview, and source guards remain compatible.
+
+The supplied self-referencing BOM screenshot is illustrative only; a real BOM must not contain itself directly or indirectly. Automated tests are skipped as requested; compilation does not verify runtime manufacturing results.
+
+## 24. Choice-level minimum and maximum quantity checks
+
+The supplied Insight Works Product Configurator 4.1 package's public symbols and XML documentation expose a per-choice behavior field, minimum/maximum decimal fields, and these four modes. This standalone implementation uses its own enum **91002 CF_MinMaxQtyBehavior**, without adding a vendor dependency or copying vendor implementation.
+
+Both choice-maintenance pages show **Min. Max. Quantity Behavior**, **Minimum Quantity**, and **Maximum Quantity** after **Default Quantity**:
+
+| Behavior | Quantity validation |
+|---|---|
+| Not Enabled | No min/max restriction; the existing positive-quantity requirement remains. This is the default for new and existing choices. |
+| Check Both Minimum and Maximum | Minimum <= entered quantity <= Maximum. |
+| Check Minimum Only | Entered quantity >= Minimum; Maximum is ignored. |
+| Check Maximum Only | Entered quantity <= Maximum; Minimum is ignored. |
+
+Limits apply to the choice's selected UOM **per finished item base unit**, not the total sales-line or production demand. Boundaries are inclusive and support the existing decimal precision. Minimum and Maximum cannot be negative. An enabled Maximum must be positive; zero does not mean unlimited when maximum checking is enabled. When both limits are enabled, Minimum cannot exceed Maximum.
+
+The choice's Default Quantity may be zero to require user entry. Selecting or preselecting a zero-default choice loads an incomplete temporary configuration without immediately raising a quantity error, even when minimum checking is enabled. Negative defaults are rejected. Positive defaults must satisfy active limits, and min/max setup must remain valid even for zero defaults.
+
+The user must replace zero with a positive quantity satisfying all enabled limits before Apply or production creation. The editable BOM draft introduced in section 25 can display incomplete zero-default selections, but cannot apply them. Zero is never persisted as selected component demand. Outside-range final values raise explicit errors identifying the choice, option, entered quantity, and violated limit; values are not silently clamped and warnings cannot override the check.
+
+One shared final-quantity validator is used by positive default-quantity validation, configurator quantity entry, Apply/persisted-row validation, loading previous configuration, applying the BOM draft, and production creation. Template defaults and incomplete temporary worksheets/drafts permit zero; committed selections do not. Current setup limits are rechecked before a new production snapshot is captured, including for previously saved quantities. Already-created immutable production snapshots are not reinterpreted when setup limits change, so refresh/status operations retain the captured demand.
+
+No upgrade rewrite is required: new behavior fields default to Not Enabled and limit fields to zero, preserving existing quantities and behavior.
+
+Manual acceptance (not executed): check zero template defaults with checking disabled and minimum/both checking enabled; selecting/defaulting these choices must open without an error, while Apply rejects zero and accepts an entered positive in-range quantity. Also check every mode with fractional values, exact lower/upper boundaries, values immediately outside the boundaries, single-sided limits with the inactive side ignored, invalid setup/defaults, previous saved quantities outside newly tightened limits, and unchanged existing production snapshots. Tests remain skipped as requested.
+
+## 25. Editable native component drafts
+
+Version **1.0.0.18** replaces the action's read-only preview with **New Configured BOM**, an editable worksheet backed by **CF_BOMBuffer**. The previously published preview page/table remain available for compatibility.
+
+### Draft and native structure
+
+- Each open worksheet has its own temporary record set, including a private copy of the current option choices. Other users cannot see or overwrite an unfinished draft.
+- Native **Calculate BOM Tree** generates item/component and Work/Machine Centre rows. Manufactured children are expanded using their own effective item/SKU, variant, and component-location context. Native quantities are captured without using rounded display totals as component recipe quantities.
+- Generation uses **Work Date**, matching Base App BOM Structure rather than the old shipment-date preview. The original generation date is shown when reopening a saved structure. Native base-tree phantom BOMs are flattened; selected and manually inserted Production BOMs have explicit grouping rows.
+- Root and routing-operation rows are read-only. Work/Machine Centre numbers drill down to their standard cards. No operation insertion, editing, or deletion action is provided; production routing remains entirely native.
+- Item quantities are before formula/scrap per immediate parent item's **base unit**. Children of explicit Production BOM groups use the group's BOM unit. Operation quantities are native calculated time, not editable component quantities. Formula dimensions and routing links remain separate.
+
+### Editing and applying
+
+1. Select an Item or Production BOM parent and use **Insert Item** or **Insert Production BOM** to add a component and its generated subtree.
+2. Edit component quantities, descriptions, scrap, and routing links. Non-choice Item rows additionally allow variant/UOM and formula/dimension edits. Replace component identity by deleting its branch and inserting a new component.
+3. **Delete Component Branch** removes the component and every descendant, including the removed item's displayed operations. Deleting a selected choice root clears that choice in the private worksheet; mandatory rules can still prevent Apply.
+4. **Apply BOM and Configuration** validates and saves the structure and current choices atomically against the sales-line configuration. It is an explicit save even when opened from Product Configurator; subsequently cancelling the outer window does not undo that save. **Cancel** or closing the draft without Apply makes no persistent changes.
+
+Selected choice-root quantity edits use the same positive/minimum/maximum checks as Product Configurator. Choice-root identity, UOM and formula cannot be changed to bypass choice mappings or limits. Normal native BOM quantities, including zero/negative non-choice components, retain their native meaning. Root ownership, hierarchy, cycles, depth (50), and structure size (10000 rows) are validated.
+
+Saved drafts carry a revision, saved-record identity and choice signature. Apply rejects concurrent saved-structure or choice changes. Changing choices after saving a structure requires explicitly generating a replacement draft and applying it there; the old structure is not silently discarded. **Load Previous Sales Configuration** continues to copy option choices only, not a previous document's edited component tree.
+
+### Production and lifecycle
+
+- Configurations with committed structures use **snapshot schema 3**, containing the component tree and selected choices. Schemas 1/2 retain their existing behavior for configurations without edited structures.
+- Saved components replace native component transfer during production calculation. Native recalculation still schedules routing and calculates component demand from quantities, formulas, scrap, links and UOMs. No master BOM/routing records or separate child production headers are created.
+- Native **CheckStructure** decides whether each subassembly is supplied on this order using parent/child item or SKU make-to-order policies. Saved subtree edits apply only when that item is actually produced on this order; stocked or otherwise ineligible subassemblies remain normal components.
+- Stable node identities distinguish separately edited occurrences of the same item, preventing native output-line merging from combining different recipes.
+- Committed component recipes are frozen in the production snapshot; subsequent component master-BOM edits do not replace the saved recipe. Routing versions, operations and scheduling remain native, not an editable routing snapshot.
+- Existing production links lock configuration editing. Existing consumed/reserved/picked-component refresh protections remain active and cover saved-structure components as well.
+- Sales Quote **Make Order** transfers the saved structure, node/selection identities and original configuration number, including configurations containing only a manually edited structure. Configuration deletion and sales-line cleanup remove committed draft rows; production snapshots remain independent.
+
+Validation: compiled with CodeCop/UICop. Automated tests and interactive manufacturing acceptance checks were not run, as requested.
+
+## 26. Item/category template assignment and copying
+
+Version **1.0.0.19** adds **Config. Template Assign By** to **Sales Configurator Setup**:
+
+Version **1.0.0.21** fixes opening Product Configurator from sales lines: the template action's enabled state uses a page Boolean instead of a client expression referencing `SalesLine."No."`, which caused an identifier-not-found runtime error. Item and category assignment behavior is unchanged.
+
+- **Item Category** (upgrade/default): new configurations resolve the template assigned to the parent item's actual category.
+- **Item No.**: new configurations resolve the template assigned to the sales-line **No.** Inventory item. An item category is not required, and no category-template fallback occurs. Version 1.0.0.20 renames the displayed value from Sales Line Item; the enum ID and assignment behavior are unchanged.
+
+### Headers and maintenance
+
+Version **1.0.0.22** initializes an editable temporary header when the New Configuration Template dialog opens. Sales-line/category context is retained separately until initialization; the dialog prefills the assignment, default template code and description instead of showing an empty read-only form. Only OK creates the persistent template; Cancel leaves setup unchanged.
+
+Open **Configuration Templates** from setup or Tell Me. **New Template** creates a real `CF_ConfigTemplate` header; open it to maintain its options and choices. The header has a unique **Template Code**, **Template Type**, **Item No.**, **Item Category Code**, and description.
+
+An item template requires **Item No.** with a relation to inventory Items and prohibits a category assignment. A category template requires **Item Category Code** and prohibits an item assignment. Each item/category assignment has at most one template. Assignment and code are immutable after creation; use Copy Template for another assignment. The applicable assignment field is marked mandatory.
+
+Template Code defaults to the assignment number. Codes are globally unique, so enter an alternative when an item number and category code collide. The sales-line **BOM Template Setup** action opens the assigned template or creates one for that exact item/category; its creation dialog locks the source assignment. An unassigned category-mode item must first receive an item category.
+
+The designer's routing reference defaults to the assigned item for item templates. Category templates accept a reference item in their assigned category. Existing effective item/SKU/version routing-link filtering remains in effect.
+
+### Copy Template
+
+From version **1.0.0.23**, **Copy From Template** is editable in the new-template dialog, including when opened for a sales line. Its lookup includes all existing **Item No.** and **Item Category** templates without filtering by the destination type. Selecting a source does not change the destination item/category; leaving it blank creates an empty template.
+
+Use **Copy Template** from the list or designer. Choose the destination type, item/category, and optional code/description. Copy includes all options, choices, descriptions, display order, enabled/selectable settings, mandatory rules, defaults, quantity limits, component type/item/BOM/variant/UOM mappings, and routing links.
+
+Destinations must be new or completely empty. Copy rejects populated destinations and self-copy; it never merges or overwrites. Options are inserted before their choices, then default-choice references are restored. The copy is atomic. Existing empty destinations retain their header description.
+
+Copied routing links are preserved, not silently cleared. They must still be valid for the target item's effective routing when maintained/applied or used in production; replace or clear incompatible links explicitly.
+
+### Saved configurations and upgrade
+
+- Changing setup affects new configurations only. Existing saved headers retain their original template code/type, including Sales Quote Make Order and saved structure-only configurations.
+- Reopening or refreshing an existing configuration continues to use that pinned template. A configuration originally saved without a template remains unbound; delete/recreate it to adopt a newly assigned template.
+- Loading previous sales choices maps them into the destination's template; it does not change the destination binding or copy a saved BOM tree.
+- Upgrade creates category template headers using the historical category codes and binds existing saved configuration headers to them. Published option/choice primary keys remain unchanged. Their historical AL field name `Item Category Code` now stores **Template Code** and is captioned/related accordingly; actual sales-line category fields remain source context.
+- Legacy saved selection rows are not rewritten or revalidated during upgrade. A compatibility fallback resolves their historical category template; new selections explicitly stamp their template binding.
+- Basic configurator permissions include template-header read access. Setup permissions add header maintenance and creation/copy. Master BOMs, routings, items and categories are not modified.
+
+Validation: compiled with CodeCop/UICop; tests remain skipped as requested. Item/category assignment, cross-type copying, mode-switch retention and quote conversion require interactive business acceptance checks.
+
+## 27. Base Routing and Base BOM
+
+Version **1.0.0.24** adds editable **Base Routing** and **Base BOM** to the Product Configurator sales-line header. These are configuration-level selections, not changes to Item, SKU, template, BOM or routing masters.
+
+### Native defaults
+
+The existing shared manufacturing-default resolver follows Base App `Prod. Order Line` item initialization and `GetUpdateFromSKU`, including standard variant validation:
+
+1. Start with the Item's Production BOM No. and Routing No.
+2. Apply each nonblank value from the sales-location/blank-variant SKU.
+3. For a nonblank sales variant, apply each nonblank value from its exact location/item/variant SKU. If that SKU does not exist, return to the Item defaults, matching native variant validation.
+4. Blank SKU fields do not clear values already supplied by native initialization.
+
+References in the supplied Base App source: `src/Manufacturing/Document/ProdOrderLine.Table.al` (Item No. validation and GetUpdateFromSKU), and `src/Manufacturing/Document/CreateProdOrderLines.Codeunit.al` (InitProdOrderLine). Defaults use the sales line's actual location and variant.
+
+### Editing, rebuilding and saving
+
+- Item/SKU values are initial defaults only. The user can select another BOM/routing through standard table lookups. Nonblank selections must exist and have a certified header or effective certified version.
+- Clearing a field means **no base BOM** or **no routing**, not fallback to the Item/SKU. Selected configuration components and manually inserted components can still be used with a blank base BOM.
+- Unsaved selections remain private to the popup. Cancel does not save them. Cancelling the BOM editor also preserves the outer popup's unsaved selections.
+- The finished-item root is generated from the chosen base BOM/routing. Subassemblies retain their own native item/SKU settings; root selections do not overwrite child routings/BOMs. Work/Machine Centre operation rows remain read-only.
+- Choice routing-link lookup and validation use the chosen base routing for the sales line, including an explicitly blank routing. Copied/default links are not silently removed; incompatible links must be changed or cleared before Apply.
+- Apply Configuration generates and saves a component structure and base selections together, even with no selected options. If an edited structure already exists and its base selections or choices differ, rebuilding requires confirmation and replaces manual edits only on successful Apply. Unchanged saved structures are retained.
+- Selections persist on the sales line and in the saved structure's root metadata. Delete Configuration clears them so the next configuration resolves fresh Item/SKU defaults.
+- Standard Quote Make Order explicitly carries these selections and the saved structure. Ordinary sales-line copying does not silently adopt another configuration's base selections.
+- Existing production links make these fields read-only and block underlying base-field changes.
+
+### Production and compatibility
+
+Snapshot schema 3 now carries optional root base BOM/routing metadata. Production generation and refresh restore the selected BOM/routing on the finished-item output line before native calculation; the production header displays the selected routing. Saved components continue to supply the frozen recipe. Routing operations, version selection and scheduling remain native, not editable operation snapshots. BOM Structure uses Work Date; production and link validation retain their native production/shipment-date rules.
+
+Older snapshots without these optional fields remain readable and retain their previous native routing behavior. Existing saved structures are not automatically regenerated or rewritten during upgrade; applying the new base selections to one requires confirmation to rebuild. No production orders or master records are migrated.
+
+Validation: compiled with CodeCop/UICop. Automated tests remain skipped as requested. Location/variant SKU defaults, blank values, draft replacement, quote conversion and production scheduling require interactive acceptance verification.
+
+## 28. Routing Operation display
+
+Version **1.0.0.25** adds a read-only **Routing Operation** column next to **Routing Link Code** in Product Configurator. It derives its value from the header's selected Base Routing, using the same certified routing version and sales Shipment Date resolver as the routing-link lookup and validation.
+
+Every operation with the row's Routing Link Code is displayed in Operation No. order as `Operation No. - Description`, separated by `; ` when several operations match. An empty description shows the number alone. An empty link, empty base routing, or absent match displays blank; operations with blank links are not matched to unlinked rows.
+
+The display refreshes when rows are loaded or edited and when Base Routing changes. It is calculated, not stored or copied into templates or production snapshots, and does not change routing-link validation or manufacturing behavior.
+
+Validation: compiled with CodeCop/UICop. Automated tests and interactive UI checks remain unrun as requested.
+
+## 29. Configured BOM structure diagram
+
+Version **1.0.0.26** adds **Diagram** to **New Configured BOM**. It opens page 91014 `CF_BOMDiagram` with a private copy of the complete current temporary draft, including unsaved edits and rows hidden by the editor's filters. Opening or closing the diagram does not apply the configuration, save it to the sales line, regenerate it from master data, or change the editor's filter/selection.
+
+- **Show Components Only** (initial view): finished item, nested items and Production BOM groups.
+- **Show Components and Operations**: also includes the draft's read-only Work Center and Machine Center rows.
+- Each card shows type, number, description, quantity per parent and unit of measure. Select a card for its full text, variant and configuration option/choice context. These are draft quantities, not rolled-up sales-order requirements.
+- Use **+**, **-**, **Fit to window**, mouse wheel or background drag to navigate. From version 1.0.0.29, **up/down** buttons collapse/expand hierarchy levels instead of panning (section 32). From version 1.0.0.32, box dragging moves branches and double-click opens the matching native card (section 34). Keyboard: arrow keys pan, `+`/`-` zoom, `0` fits the tree, Space selects a focused box and Enter opens its card.
+- Production BOM groups have dashed borders; configured-choice roots have a stronger outline. Repeated occurrences of an item remain separate nodes using the draft's stable node GUIDs.
+- Diagram layout gestures do not change components, quantities or BOM relationships. Close it and edit the draft grid as before. From version 1.0.0.32, native card drill-down is also available, following standard Business Central permissions and card editability.
+
+The supplied Base App `BOMStructure` page does not expose the pictured Diagram action. Instead, the bundled `CF_BOMDiagram` control add-in follows the Service Scheduler example's `ControlReady`/JSON-load handshake and renders a local SVG tree. It requires no CDN, third-party library or external data service. Text is rendered as text rather than interpolated HTML. The existing draft limits (10000 rows, depth 50) are retained; invalid structures produce an explicit error rather than a partial tree.
+
+Validation: AL compilation, CodeCop/UICop and JavaScript syntax checks. An isolated browser preview checked multilevel rendering, repeated item occurrences, a zero quantity, operation cards, selection details, zoom and drag panning. Automated tests and end-to-end Business Central UI acceptance remain unrun.
+
+## 30. Item lookup guard when generating a BOM draft
+
+Version **1.0.0.27** fixes **Show New Configured BOM** failing with `The Item does not exist ... No.='100'` when a routing operation uses a Work Center or Machine Center number that is not an item number.
+
+The native BOM tree includes both item components and routing-operation rows. The previous combined `and` condition called `IsProductionItem` for operation rows as well: AL does not short-circuit Boolean expressions. That passed the center's number to `Planning-Get Parameters.AtSKU`, which attempted an Item lookup.
+
+`IsProductionItem` now returns false for non-Item rows before performing any planning/SKU lookup. The caller also checks child indentation in a separate conditional. Work/Machine Center rows remain visible and read-only; only manufactured item components are considered for recursive item expansion. Item/SKU selection and genuine missing-item errors are unchanged. No item or manufacturing master data needs to be created or changed for this fix.
+
+## 31. Diagram web-client host layout
+
+Version **1.0.0.28** fixes the blank diagram window. The renderer previously appended its root after the web client's full-height `controlAddIn` container, placing the diagram below the visible iframe even though nodes were generated. The first standalone browser preview did not include that host container, so it did not reproduce the web-client layout.
+
+The renderer now mounts inside `controlAddIn` and sizes its root to that container. Initialization shows a loading message until AL supplies the payload, and startup/rendering exceptions show a visible alert and notify AL through `RenderFailed`. This changes only the diagram's hosting, not draft or production data.
+
+Validation: reproduced the old off-screen root in a browser with a full-height `controlAddIn` host, then verified the corrected diagram and node bounds were inside the host, including a 520-by-430 modal-sized container. JavaScript syntax and AL package compilation were checked. Automated tests and end-to-end Business Central UI acceptance remain unrun.
+
+## 32. Diagram hierarchy-level controls
+
+Version **1.0.0.29** replaces the four toolbar pan-direction buttons with two hierarchy controls:
+
+- **Up arrow - Collapse one hierarchy level:** hide the deepest visible level across the tree. Repeated clicks reduce the view to the finished-item root.
+- **Down arrow - Expand one hierarchy level:** reveal the next child level across the tree, up to the complete draft hierarchy.
+
+The diagram initially shows all levels as before. Collapse is disabled at the root-only view; expand is disabled when all levels are visible. Each change recalculates the visible parent/child layout and fits it to the window, without gaps or connectors to hidden nodes. Hidden rows remain in the private draft and are not deleted or changed.
+
+The same depth control applies to both components-only and components-with-operations views. Switching views keeps the current level where possible; an already fully expanded view remains fully expanded. Zoom, Fit, drag panning and keyboard arrow-key panning are retained. The toolbar arrows are buttons, distinct from the keyboard's pan keys.
+
+Validation: the hosted browser preview showed a four-level tree changing from 7 to 6 to 4 to 1 visible nodes, then restoring 4, 6 and 7 nodes. Connector counts matched visible nodes minus one; limits disabled the appropriate button. Root-only trees, components/operations switching, selection retention and unchanged source payload were also checked. Automated tests and end-to-end Business Central UI acceptance remain unrun.
+
+## 33. Favorable styling for configurator-added rows
+
+Versions **1.0.0.30-1.0.0.32** introduced highlighting across entire configurator-added branches in **New Configured BOM**. Version **1.0.0.31** changed the native text style from Attention to **Favorable (green)**, retaining the original whole-branch scope. **Version 1.0.0.33 narrows this scope to direct additions only; section 35 supersedes the highlighting rules below.**
+
+The original finished-item root, base BOM components and base routing operations retain their normal appearance. Unhighlighted parent numbers retain their existing Strong style. Editing the quantity or description of an original base row does not make it an added row. The style does not change editability, manufacturing quantities, masters or production behavior.
+
+`CF_BOMBuffer` field 37, **Configurator Added**, records origin when rows are generated: false for the native base tree and true for choice/manual additions and their descendants. It persists with the saved draft and is included as an optional field in schema-3 production snapshots; older snapshots without it remain readable.
+
+For older drafts, choice-root ancestry identifies and highlights known choice branches without regenerating or modifying their saved structure. As confirmed, older manually inserted rows with no origin information remain unhighlighted unless they belong to a known choice branch. No automatic regeneration, comparison against changed master BOMs or guessing of legacy manual origin is performed.
+
+Validation: compiled with CodeCop/UICop. Automated tests and interactive Business Central styling acceptance remain unrun.
+
+## 34. Temporary branch dragging and native card drill-down
+
+Version **1.0.0.32** adds the following diagram interactions:
+
+- **Drag a box:** move that occurrence and its entire child branch. Connectors follow during the drag. Other branches, including repeated occurrences of the same item, stay in place.
+- **Drag the background:** pan the viewport as before.
+- **Double-click a box**, or select it and choose **Open card**: open its standard Item Card, Production BOM, Work Center Card or Machine Center Card, according to the node's actual type.
+- **Reset layout:** discard all manual offsets and restore the automatic layout at the currently visible depth.
+- **Fit to window:** include all visible moved nodes, even when moved above or to the left of the original layout.
+- Keyboard: Space selects a focused box, Enter opens its native card, Shift+arrow moves its branch, and Escape cancels an active drag. Plain arrow keys still pan.
+
+The confirmed drag behavior is whole-branch movement, not reparenting. Manual offsets are kept in JavaScript for the open diagram only; no positions are saved to the draft, sales line, production snapshot or masters. A transient page-session identifier resets offsets on a new diagram opening. Collapse/expand and components/operations switches retain offsets for the current session; hidden descendants inherit their moved ancestor's offset when shown.
+
+Drill-down sends only the stable node GUID to AL. The page resolves that GUID against its own private draft copy and opens the record using the server-side row type/number; it does not trust a client-supplied record type or item number. Invalid or foreign nodes raise an error. The grid and diagram share `CF_BOMBuffer.OpenCard`, preserving existing standard-card behavior and user permissions. Opening/editing a native card does not apply or regenerate the draft.
+
+Validation: AL compilation with CodeCop/UICop and JavaScript syntax checks. The hosted browser preview verified equal parent/descendant movement, stationary unrelated/duplicate-item branches, live connector changes, collapse/expand with hidden descendants, Escape rollback, fit with negative coordinates, reset and new-session cleanup. Double-click, Enter and Open card emitted the expected node GUIDs for Item, Production BOM, Work Center and Machine Center examples; the source payload remained unchanged. Automated tests and end-to-end native Business Central card-opening acceptance remain unrun.
+
+## 35. Green styling for direct additions only
+
+Version **1.0.0.33** highlights only the directly added choice/manual rows. A selected Production BOM or subassembly item is green, but its existing child components, nested BOMs and routing operations retain normal styling. Directly selected items such as BUTTON and MEDIUM-ITEM also remain green. A separately inserted manual item/BOM is green even when inserted beneath another added branch; its inherited descendants are not.
+
+`CF_BOMBuffer` field 38, **Direct Addition**, marks generated choice roots and the root of each manually inserted branch. The marker survives saved drafts, quote transfer and production snapshots as another optional schema-3 field. Field 37 retains its existing branch-origin meaning; it no longer causes descendant-wide highlighting.
+
+Older choice roots remain identifiable from **Choice Root**. A legacy marked branch boundary (an added row whose parent is not marked added) also identifies a direct insertion. Older manually inserted rows nested within an already marked branch cannot be distinguished reliably and are not guessed or regenerated. Original base rows remain unchanged, and normal parent numbers retain their Strong style.
+
+This is a display/origin-metadata change only: BOM relationships, quantities, routing, editability and production calculations remain unchanged. Automated tests and interactive Business Central styling acceptance remain unrun.
+
+## 36. Native component item types
+
+Version **1.0.0.34** permits **Inventory** and **Non-Inventory** component items. The supplied Base App 28 source uses this same type filter in both **Production BOM Line.No.** and **Prod. Order Component.Item No.** This is source-based alignment, not direct inspection of the deployed Base App 29 implementation.
+
+The shared component validator applies this rule to inherited BOM items, selected choices, manual additions and production transfer. Choice number lookups and **Insert Item** use the same allowed types. **Service** and unsupported item types remain rejected. The finished draft root retains a separate Inventory-only check; parent template assignments and routing-reference item filters are unchanged.
+
+Blocked/production-consumption-blocked item and variant checks, valid UOM and positive conversion factors remain required. Native component field validation, bin handling and reservation calls remain unchanged. No item master types, BOM masters or existing drafts are rewritten, and no rebuild is required solely for this validation correction.
+
+The earlier `Configured component item SP-BOM1110 must be an inventory item.` error came from the configurator's overly restrictive component validator. A Non-Inventory item now passes that type check; a Service item still cannot be used as a production component.
+
+Regression cases cover Non-Inventory component validation/mapping, Service rejection and the Inventory-only finished root. Automated tests and end-to-end Business Central acceptance remain unrun.
+
+## 37. Availability and configured Order Promising
+
+Version **1.0.0.35** adds an **Availability** split button to **Product Configurator**. Its main action opens configured **BOM Level** availability. The menu also contains **Order Promising**, **Event**, **Period**, **Variant**, **Location**, **Lot**, **BOM Level** and **Unit of Measure**, using native captions, images and pages.
+
+### Views and configuration scope
+
+- Event/Period/Variant/Location/Lot/UOM are standard finished-item inventory/supply views, initially using the source sales-line item, variant, location and shipment-date context. They do not change the sales line. Variant and Location views retain the standard ability to compare alternatives.
+- BOM Level uses the current temporary choices, quantities and Base BOM/Routing. If these still match the saved structure, saved manual BOM edits are retained; otherwise an isolated replacement preview is generated without replacing the saved draft. Edits in an open, nested BOM editor must be applied there before they become available to the configurator.
+- Mandatory options, component mappings and the resulting tree are validated before configured BOM/CTP preview. Opening availability does not Apply Configuration or modify item/BOM/routing masters.
+- The native BOM availability engine calculates able-to-make figures over a temporary item hierarchy. Phantom BOMs are flattened using the same quantity/scrap/link traversal as production. Native component quantity, scrap, lead-time and UOM helpers are used; item/location/variant/date availability buckets retain each component's effective location.
+
+### Order Promising
+
+Order Promising is available for Sales Orders, not Quotes. The native page receives **only the originating sales line**, never the currently selected component/option row or every line in the order.
+
+- **Available-to-Promise:** native finished-item stock and scheduled supply, including standard outstanding/unreserved demand rules. Stock for the same item/variant is not distinguished by configurator choice values.
+- **Late promises (1.0.0.36):** after either ATP or CTP calculation, sales rows use native **Unfavorable** (red) text across all columns when Planned Delivery Date exceeds Requested Delivery Date, or no feasible date is returned. Without a requested delivery date, Earliest Shipment Date is compared with Requested Shipment Date (falling back to Original Shipment Date). If all requested/original dates are blank, only a missing feasible date triggers red. Equal/earlier results retain normal styling, as do rows before calculation and nonpositive demand. Calculation refreshes the styling; the warning does not block native Accept or change calculated dates. Interactive Business Central color/date acceptance remains unrun.
+- **Capable-to-Promise:** native date search, routing calculation, component scheduling, reservation and supply logic, with the frozen configured hierarchy replacing master-BOM explosion for manufactured/assembly nodes. A configured finished item must use production-order replenishment on its effective item/SKU. Native **Critical** component flags still determine which shortages CTP checks; this is not a custom finite-capacity or all-component-shortage solver.
+- Blank Base BOM with selected/manual components is supported. Effective Base Routing is passed to the planning line. Native multilevel make-to-order handling retains occurrence-specific node identities, including repeated items with different configured subtrees.
+- Native purchase/transfer supply remains native. A transferred component manufactured at its source location uses that location's standard supply structure when it has no configured manufactured subtree at the original location.
+- **Accept** keeps the standard behavior: update the selected sales-line dates and retain its planning/reservation entries. It does **not** apply the configurator choices. Accepted planning keeps a separate frozen configuration even if the outer configurator is later cancelled.
+- A unique promising group isolates native cancellation and acceptance from other sales lines/sessions. A source-context/quantity/date check runs before Accept, before the native action marks the session accepted.
+
+### Retained planning
+
+`CF_PromiseContext` stores one immutable schema-3 structure snapshot per promising session that actually creates planning supply. Requisition lines reference the context and their exact BOM node; planning components retain node identities. Recalculation uses that frozen structure rather than silently reverting to the item master BOM. Native planning carry-out transfers a suitable structure snapshot and node identities to the resulting production order, so its configured structure remains available afterward.
+
+Contexts are removed when their final requisition line is deleted, including native cancellation and carry-out cleanup. The snapshot already copied to production is independent. Normal promising sessions outside the configurator do not receive these filters or overrides.
+
+Regression cases were added for unapplied preview isolation, immutable planning snapshots and selected components with no base BOM (including the expected quantity of six for two components per unit and three finished units). Automated tests and end-to-end native availability/ATP/CTP/Accept/cancellation acceptance remain unrun.
+
+## 38. Creating purchase/transfer supply for configured materials
+
+Version **1.0.0.37** adds **Product Configurator > Availability > Create Material Supply** for the originating Sales Order line and its current, unapplied configuration. It does not create supply for other sales lines, apply the configuration or create production orders.
+
+### Net demand and setup
+
+- **Sales Configurator Setup > Material Receipt Policy** selects **Receipts by Required Date** (default, including existing companies) or **All Outstanding Purchase/Transfer Receipts**. The second option allows late purchase/transfer receipts to cover demand; inventory and other scheduled supply remain date-specific.
+- The finished root is treated as the configured production output, even if its default replenishment method is Purchase; this action never purchases/transfers the finished root. Finished-item demand is the source line's outstanding base quantity less reservations to actual supply; reservations to unconverted requisition proposals do not count as actual supply. Available finished-item and manufactured subassembly stock/scheduled supply are netted before their configured component demand is generated.
+- The native ATP calculation supplies unreserved inventory, actual scheduled receipts and competing document demand, filtered by item, variant, location and required date. Worksheet component/transfer proposals are excluded from competing firm demand; unconverted requisition proposals are not treated as actual purchase/transfer orders.
+- Current private BOM structure, phantom flattening, quantity formulas, UOM conversions, scrap, routing scrap and lead-time offsets use the same tree/native manufacturing helpers as configured availability. Component locations and replenishment/vendor/transfer-from defaults use native **Planning-Get Parameters.AtSKU**, with Item fallback.
+- All inventory components are considered, not just native CTP **Critical** items. Non-Inventory/Service rows are not inventory shortages. Purchase/Transfer nodes are supplied as whole items; manufactured/assembly nodes are exploded only for their net shortage. This is not a request to buy an item configured for production.
+- Shared item occurrences are processed after their manufactured parents, then by required date, allocating existing supply only once per variant/location. Cross-branch item dependency cycles are rejected explicitly rather than creating speculative orders.
+- This action plans **net new production**. Existing finished-item/subassembly supply that already covers demand suppresses its component explosion. Shortages on components of already-existing production orders remain the responsibility of native order/material planning.
+
+### Review and creation
+
+- The popup initially selects every purchase/transfer shortage. Users can untick individual rows, **Clear Selection**, or **Select All**.
+- Required/covered/shortage quantities are shown in base units, with the required date, variant, destination and replenishment method. Vendor and transfer-from fields can be entered or overridden without changing Item/SKU masters.
+- **OK** confirms actual order creation; **Cancel** creates nothing. At least one shortage must be selected and its vendor or transfer-from/destination must be supplied. Standard vendor, item, location, transfer-route, posting-setup and document-number validation still applies.
+- Purchase orders are grouped by vendor/destination, using native header/line validation, purchase UOM, pricing and receipt dates. Transfer orders are grouped by source/destination, using native route/calendar/date validation. Matching selected item/variant/location/date/supplier requirements are combined before UOM rounding. Quantities round up to native UOM precision, never below the selected base shortage.
+- Orders remain **Open**, not released or posted. Transfer creation does not guarantee inventory at the source or automatically purchase stock there; native shipping checks still apply. This is exact-shortage procurement, not a full reorder-policy/minimum-order/safety-stock planning run.
+- Source-line concurrency, setup and selected shortages are checked again before creation. If they changed during review, the user must reopen the review. Creation is one transaction with explicit commits prohibited; a validation failure rolls back the batch. Standard purchasing/transfer document permissions are required; the configurator permission set does not grant broad document tabledata access.
+- The result lists created purchase/transfer order numbers. Reopening recalculates supply, so newly created qualifying receipts cover their quantities instead of blindly repeating the previous purchase/transfer request.
+
+Regression cases were authored for exact unapplied demand/default selection, configured-root production intent, late-receipt policy, finished-stock/subassembly netting, repeated-item stock allocation, SKU transfer precedence, proposal reservations and selection/vendor validation. Automated tests remain skipped as requested. Native interactive receipt-policy, multilevel/shared-stock, vendor/UOM/calendar, selection/cancellation, document creation/rollback and repeat-run acceptance checks remain outstanding.
+
+## 39. Configurator opening: document-type client expression
+
+Version **1.0.0.38** fixes the runtime error **The identifier 'SalesLine.Document Type' could not be found** when opening Product Configurator. The Order Promising and Create Material Supply actions now use the scalar page Boolean `IsSalesOrder`, initialized from the source line and refreshed with the production context, rather than a client-side expression referencing a secondary record field. Both actions remain enabled only for Sales Orders, not Quotes. The earlier item-number fix in section 26 uses the same pattern. Action enablement properties must not reference fields on the secondary `SalesLine` record directly.
+
+Automated tests remain skipped as requested; interactive Sales Order/Sales Quote opening and action-state acceptance remain outstanding.
